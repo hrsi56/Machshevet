@@ -242,19 +242,27 @@ from PIL import Image, ImageDraw
 # 🔧  תיקון זמני ל-Streamlit >= 1.30  (image_to_url הוזזה למודול אחר)
 # =============================================================================
 
-# --- Patch for streamlit-drawable-canvas on Streamlit >=1.30 ------------------
-if not hasattr(st.image, "image_to_url"):
-    import io, base64, types
-    def _pil_to_data_url(self, img, width, clamp):
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        return f"data:image/png;base64,{b64}"
-    st.image.image_to_url = types.MethodType(_pil_to_data_url, st.image)
-# -----------------------------------------------------------------------------
+# --- Patch for streamlit-drawable-canvas on Streamlit >= 1.30 -----------------
+import io, base64
+import streamlit.elements.image as _st_img  # זה המודול שהספרייה בודקת
 
+if not hasattr(_st_img, "image_to_url"):
+    def image_to_url(img, width=None, clamp=False):
+        """Return a data-URL (PNG) for a given PIL image – replacement for the
+        removed streamlit.elements.image.image_to_url()."""
+        if hasattr(img, "convert"):           # PIL.Image
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            data = buf.getvalue()
+        else:                                 # Already bytes-like
+            data = img
+        b64 = base64.b64encode(data).decode()
+        return f"data:image/png;base64,{b64}"
+
+    _st_img.image_to_url = image_to_url      # ← מוסיף בדיוק במקום שהספרייה מחפשת
+# -----------------------------------------------------------------------------
 # =============================================================================
 # ⚙️  קבועים גרפיים
 # =============================================================================
