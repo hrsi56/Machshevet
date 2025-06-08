@@ -235,158 +235,264 @@ class Game:
         self.custom_metadata[key] = value
 
 
-from streamlit_drawable_canvas import st_canvas
+import streamlit as st
 from PIL import Image, ImageDraw
 
-# =============================================================================
-# 🔧  תיקון זמני ל-Streamlit >= 1.30  (image_to_url הוזזה למודול אחר)
-# =============================================================================
 
-import streamlit as st
+# הנח כאן את הגדרות המחלקות שלך: Board ו-Game
+# לדוגמה (אני מניח מבנה בסיסי, התאם אותו לקוד שלך):
 
-# --- Monkey-patch for streamlit-drawable-canvas on Streamlit ≥1.30 ------------
-import io
-import base64
-import streamlit.elements.image as _st_img
+class Board:
+    LEGAL_POSITIONS = {(r, c) for r in range(7) for c in range(7)} - \
+                      {(r, c) for r in range(2) for c in range(2)} - \
+                      {(r, c) for r in range(2) for c in range(5, 7)} - \
+                      {(r, c) for r in range(5, 7) for c in range(2)} - \
+                      {(r, c) for r in range(5, 7) for c in range(5, 7)}
 
-if not hasattr(_st_img, "image_to_url"):
-    def image_to_url(img, width=None, clamp=False, channels="RGBA", output_format="PNG", **kwargs):
-        """
-        Compatible replacement for Streamlit's removed image_to_url().
-        Accepts all args passed by streamlit-drawable-canvas.
-        """
-        if hasattr(img, "convert"):
-            img = img.convert(channels)
-            buf = io.BytesIO()
-            img.save(buf, format=output_format)
-            data = buf.getvalue()
+    def __init__(self):
+        self.grid = {pos: 1 for pos in self.LEGAL_POSITIONS}
+        center = (3, 3)
+        if center in self.grid:
+            self.grid[center] = 0  # חור במרכז
+        self._initial_state = self.grid.copy()
+
+    def get(self, pos):
+        return self.grid.get(pos)
+
+    def set(self, pos, value):
+        if pos in self.LEGAL_POSITIONS:
+            self.grid[pos] = value
+
+    def count_pegs(self):
+        return sum(self.grid.values())
+
+    def reset(self):
+        self.grid = self._initial_state.copy()
+
+
+class Game:
+    def __init__(self):
+        self.board = Board()
+        self.move_history = []
+        self.redo_stack = []
+        self.move_log = []
+
+    def apply_move(self, from_pos, to_pos):
+        # ודא שהמיקומים חוקיים
+        if from_pos not in Board.LEGAL_POSITIONS or to_pos not in Board.LEGAL_POSITIONS:
+            return False, None, None, "מהלך לא חוקי: מחוץ ללוח"
+
+        # בדוק אם יש פיון בנקודת ההתחלה ואין בנקודת הסיום
+        if self.board.get(from_pos) != 1 or self.board.get(to_pos) != 0:
+            return False, None, None, "מהלך לא חוקי: פיון התחלה או סיום לא תקינים"
+
+        # חשב את מיקום הפיון ש"נאכל"
+        dr, dc = to_pos[0] - from_pos[0], to_pos[1] - from_pos[1]
+        if abs(dr) == 2 and dc == 0:
+            over_pos = (from_pos[0] + dr // 2, from_pos[1])
+        elif abs(dc) == 2 and dr == 0:
+            over_pos = (from_pos[0], from_pos[1] + dc // 2)
         else:
-            data = img  # Assume already bytes
-        b64 = base64.b64encode(data).decode()
-        return f"data:image/{output_format.lower()};base64,{b64}"
+            return False, None, None, "מהלך לא חוקי: תנועה לא באלכסון או רחוקה מדי"
 
-    _st_img.image_to_url = image_to_url
-# ------------------------------------------------------------------------------
-# ⚙️  קבועים גרפיים
-# =============================================================================
-GRID      = 7            # 7x7
-CELL      = 80           # פיקסלים לצד משבצת
-SIZE      = GRID*CELL    # גודל קנבס
-RADIUS    = int(CELL*0.38)
+        # ודא שקיים פיון שניתן לדלג מעליו
+        if self.board.get(over_pos) != 1:
+            return False, None, None, "מהלך לא חוקי: אין פיון לדלג מעליו"
 
-COL_PEG   = "#FFD600"
-COL_HOLE  = "#202020"
-COL_EDGE  = "black"
-COL_SEL   = "#42A5F5"
-BG_COLOR  = "#eeeeee"
+        # בצע את המהלך
+        self.board.set(from_pos, 0)
+        self.board.set(over_pos, 0)
+        self.board.set(to_pos, 1)
+
+        # שמור בהיסטוריה
+        move = (from_pos, over_pos, to_pos)
+        self.move_history.append(move)
+        self.move_log.append(move)
+        self.redo_stack.clear()  # ניקוי ערימת ה-redo לאחר מהלך חדש
+        return True, from_pos, over_pos, to_pos
+
+    def undo(self):
+        if not self.move_history:
+            return
+        last_move = self.move_history.pop()
+        from_pos, over_pos, to_pos = last_move
+
+        self.board.set(from_pos, 1)
+        self.board.set(over_pos, 1)
+        self.board.set(to_pos, 0)
+
+        self.redo_stack.append(last_move)
+        self.move_log.pop()
+
+    def redo(self):
+        if not self.redo_stack:
+            return
+        move_to_redo = self.redo_stack.pop()
+        from_pos, over_pos, to_pos = move_to_redo
+
+        self.board.set(from_pos, 0)
+        self.board.set(over_pos, 0)
+        self.board.set(to_pos, 1)
+
+        self.move_history.append(move_to_redo)
+        self.move_log.append(move_to_redo)
+
+    def reset(self):
+        self.board.reset()
+        self.move_history.clear()
+        self.redo_stack.clear()
+        self.move_log.clear()
+
+    def is_win(self):
+        return self.board.count_pegs() == 1 and self.board.get((3, 3)) == 1
+
+    def is_game_over(self):
+        if self.is_win():
+            return False
+        # בדיקה פשוטה, ניתן לממש בדיקה מלאה של כל המהלכים האפשריים
+        return self.board.count_pegs() > 1 and len(self.get_all_possible_moves()) == 0
+
+    def get_all_possible_moves(self):
+        moves = []
+        for r_from, c_from in Board.LEGAL_POSITIONS:
+            if self.board.get((r_from, c_from)) == 1:
+                for dr, dc in [(0, 2), (0, -2), (2, 0), (-2, 0)]:
+                    r_to, c_to = r_from + dr, c_from + dc
+                    if (r_to, c_to) in Board.LEGAL_POSITIONS and self.board.get((r_to, c_to)) == 0:
+                        r_over, c_over = r_from + dr // 2, c_from + dc // 2
+                        if self.board.get((r_over, c_over)) == 1:
+                            moves.append(((r_from, c_from), (r_to, c_to)))
+        return moves
+
+    def export_move_log(self):
+        return self.move_log
+
 
 # =============================================================================
 # 🗂  Session-state
 # =============================================================================
 if "game" not in st.session_state:
     st.session_state.game = Game()
-if "sel" not in st.session_state:      # פיון מסומן (או None)
+if "sel" not in st.session_state:  # פיון מסומן (או None)
     st.session_state.sel = None
-if "obj_cnt" not in st.session_state:  # ניטור כמות האובייקטים בקנבס
-    st.session_state.obj_cnt = 0
+if "error_message" not in st.session_state:
+    st.session_state.error_message = None
+if "success_message" not in st.session_state:
+    st.session_state.success_message = None
+
 
 # =============================================================================
-# 🖼  פונקציית ציור הלוח כתמונה
+# 🎨 פונקציות עזר ל-UI
 # =============================================================================
-def render_board(board: Board, selected):
-    img  = Image.new("RGB", (SIZE, SIZE), BG_COLOR)
-    draw = ImageDraw.Draw(img)
+def handle_click(row, col):
+    """מטפל בלחיצה על משבצת בלוח"""
+    game = st.session_state.game
+    click = (row, col)
+    st.session_state.error_message = None
+    st.session_state.success_message = None
 
-    for (r, c) in Board.LEGAL_POSITIONS:
-        x = c*CELL + CELL//2
-        y = r*CELL + CELL//2
-        fill    = COL_PEG if board.get((r, c)) == 1 else COL_HOLE
-        outline = COL_SEL if selected == (r, c) else COL_EDGE
-        draw.ellipse((x-RADIUS, y-RADIUS, x+RADIUS, y+RADIUS),
-                     fill=fill, outline=outline, width=3)
-    return img
+    # שלב ראשון – בחירת פיון
+    if st.session_state.sel is None:
+        if game.board.get(click) == 1:
+            st.session_state.sel = click
+        # אין צורך ב-rerun, הלולאה תמשיך וה-UI יתעדכן ממילא
+    # שלב שני – ניסיון קפיצה
+    else:
+        from_pos = st.session_state.sel
+        to_pos = click
+
+        # אם המשתמש לוחץ שוב על אותו פיון, בטל את הבחירה
+        if from_pos == to_pos:
+            st.session_state.sel = None
+            return
+
+        applied, _, _, _ = game.apply_move(from_pos, to_pos)
+        st.session_state.sel = None  # איפוס הבחירה בכל מקרה
+        if applied:
+            st.session_state.success_message = f"המהלך בוצע: {from_pos} ➝ {to_pos}"
+        else:
+            st.session_state.error_message = "מהלך לא חוקי"
+
+
+def get_peg_display(r, c):
+    """מחזיר את התו (אימוג'י) להצגה במשבצת"""
+    pos = (r, c)
+    is_selected = (st.session_state.sel == pos)
+
+    if st.session_state.game.board.get(pos) == 1:
+        return "🔵" if is_selected else "🟢"  # פיון מסומן / פיון רגיל
+    elif st.session_state.game.board.get(pos) == 0:
+        return "⚪"  # חור
+    else:
+        return ""  # מחוץ ללוח
+
 
 # =============================================================================
 # 🏷  כותרת
 # =============================================================================
-st.title("🧠 מחשבת – Peg Solitaire בלחיצה")
+st.title("🧠 מחשבת – Peg Solitaire")
 
 # =============================================================================
-# 🎨  קנבס אינטראקטיבי
+# 🎨  הצגת הלוח עם כפתורים
 # =============================================================================
-board_img = render_board(st.session_state.game.board, st.session_state.sel)
+st.markdown("<div style='direction: ltr;'>", unsafe_allow_html=True)
+# יצירת רשת של עמודות
+grid_cols = st.columns(7)
+for r in range(7):
+    # כל שורה בתוך העמודה המתאימה
+    with grid_cols[r]:
+        for c in range(7):
+            pos = (c, r)  # שים לב להיפוך, כי אנחנו בונים עמודה-עמודה
+            display_char = get_peg_display(c, r)
 
-canvas = st_canvas(
-    background_image=board_img,
-    height=SIZE,
-    width=SIZE,
-    drawing_mode="point",          # לוכד לחיצות עכבר (יוצר 'point' קטן)
-    point_display_radius=1,        # נקודה מיקרוסקופית
-    update_streamlit=True,
-    key="board_canvas",
-)
-
-# =============================================================================
-# 👆  טיפול בלחיצה
-# =============================================================================
-# אם התווסף אובייקט חדש (point) מאז הריצה הקודמת
-if canvas.json_data:
-    objects = canvas.json_data["objects"]
-    if len(objects) > st.session_state.obj_cnt:
-        # קואורדינטות של האובייקט האחרון שנוסף
-        obj     = objects[-1]
-        x_px    = obj["left"]
-        y_px    = obj["top"]
-        col     = int(x_px // CELL)
-        row     = int(y_px // CELL)
-        click   = (row, col)
-        st.session_state.obj_cnt = len(objects)   # עדכון מונה
-
-        if click in Board.LEGAL_POSITIONS:
-            game = st.session_state.game
-            # שלב ראשון – בחירת פיון
-            if st.session_state.sel is None:
-                if game.board.get(click) == 1:
-                    st.session_state.sel = click
-                    st.experimental_rerun()
-            # שלב שני – ניסיון קפיצה
+            if display_char:
+                st.button(
+                    display_char,
+                    key=f"btn_{c}_{r}",
+                    on_click=handle_click,
+                    args=(c, r)
+                )
             else:
-                from_pos = st.session_state.sel
-                to_pos   = click
-                applied, _, _, _ = game.apply_move(from_pos, to_pos)
-                st.session_state.sel = None
-                if applied:
-                    st.success(f"המהלך בוצע: {from_pos} ➝ {to_pos}")
-                else:
-                    st.error("מהלך לא חוקי")
-                # מנקים את הקנבס מאובייקטים כדי שלא ייגדלו לנצח
-                st.session_state.obj_cnt = 0
-                st.experimental_rerun()
+                # משבצת ריקה כדי לשמור על מבנה הרשת
+                st.markdown("<div style='height: 39px;'></div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================================================================
 # 🔘  כפתורי שליטה
 # =============================================================================
 col1, col2, col3 = st.columns(3)
 with col1:
-    if st.button("↩️ Undo", disabled=not st.session_state.game.move_history):
+    if st.button("↩️ Undo", disabled=not st.session_state.game.move_history, use_container_width=True):
         st.session_state.game.undo()
-        st.experimental_rerun()
+        st.session_state.error_message = None
+        st.session_state.success_message = None
+        st.rerun()
 with col2:
-    if st.button("↪️ Redo", disabled=not st.session_state.game.redo_stack):
+    if st.button("↪️ Redo", disabled=not st.session_state.game.redo_stack, use_container_width=True):
         st.session_state.game.redo()
-        st.experimental_rerun()
+        st.session_state.error_message = None
+        st.session_state.success_message = None
+        st.rerun()
 with col3:
-    if st.button("🔄 Reset"):
+    if st.button("🔄 Reset", use_container_width=True):
         st.session_state.game.reset()
         st.session_state.sel = None
-        st.session_state.obj_cnt = 0
-        st.experimental_rerun()
+        st.session_state.error_message = None
+        st.session_state.success_message = None
+        st.rerun()
 
 # =============================================================================
 # ℹ️  סטטוס ולוג
 # =============================================================================
 game = st.session_state.game
-peg_cnt  = game.board.count_pegs()
+
+# הצגת הודעות הצלחה או שגיאה
+if st.session_state.success_message:
+    st.success(st.session_state.success_message)
+if st.session_state.error_message:
+    st.error(st.session_state.error_message)
+
+peg_cnt = game.board.count_pegs()
 move_cnt = len(game.move_log)
 
 if game.is_win():
@@ -397,6 +503,7 @@ else:
     st.info(f"פינים: {peg_cnt} | מהלכים: {move_cnt}")
 
 with st.expander("📜 לוג מהלכים"):
+    if not game.move_log:
+        st.write("אין מהלכים עדיין.")
     for i, (f, o, t) in enumerate(game.export_move_log(), 1):
         st.write(f"{i:2}: {f} ➝ {t} (דרך {o})")
-
