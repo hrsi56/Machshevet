@@ -238,81 +238,117 @@ class Game:
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image, ImageDraw
 
+# =============================================================================
+# 🔧  תיקון זמני ל-Streamlit >= 1.30  (image_to_url הוזזה למודול אחר)
+# =============================================================================
+if not hasattr(st.image, "image_to_url"):
+    # שחזור מהיר של הפונקציה – מספיק לטובת streamlit-drawable-canvas
+    from streamlit.runtime.media_file_storage import media_file_manager
+    import types
+    def _image_to_url(self, img, width, clamp):
+        return media_file_manager.add(img, "image/png")
+    st.image.image_to_url = types.MethodType(_image_to_url, st.image)
 
-# ---------- קבועים גרפיים ----------
-GRID = 7
-CELL = 70                     # פיקסלים לתא אחד
-RADIUS = int(CELL*0.38)       # חישוב רדיוס מעגל
-SIZE  = GRID * CELL           # גודל הקנבס (ריבוע)
+# =============================================================================
+# ⚙️  קבועים גרפיים
+# =============================================================================
+GRID      = 7            # 7x7
+CELL      = 80           # פיקסלים לצד משבצת
+SIZE      = GRID*CELL    # גודל קנבס
+RADIUS    = int(CELL*0.38)
 
 COL_PEG   = "#FFD600"
 COL_HOLE  = "#202020"
 COL_EDGE  = "black"
 COL_SEL   = "#42A5F5"
+BG_COLOR  = "#eeeeee"
 
-# ---------- אתחול מצב ----------
+# =============================================================================
+# 🗂  Session-state
+# =============================================================================
 if "game" not in st.session_state:
     st.session_state.game = Game()
-if "sel" not in st.session_state:     # פיון שנבחר
+if "sel" not in st.session_state:      # פיון מסומן (או None)
     st.session_state.sel = None
+if "obj_cnt" not in st.session_state:  # ניטור כמות האובייקטים בקנבס
+    st.session_state.obj_cnt = 0
 
-# ---------- פונקציה שמחזירה תמונה עדכנית של הלוח ----------
+# =============================================================================
+# 🖼  פונקציית ציור הלוח כתמונה
+# =============================================================================
 def render_board(board: Board, selected):
-    img = Image.new("RGB", (SIZE, SIZE), "#eeeeee")
+    img  = Image.new("RGB", (SIZE, SIZE), BG_COLOR)
     draw = ImageDraw.Draw(img)
 
     for (r, c) in Board.LEGAL_POSITIONS:
         x = c*CELL + CELL//2
         y = r*CELL + CELL//2
-        fill = COL_PEG if board.get((r, c)) == 1 else COL_HOLE
-        outline = COL_SEL if selected==(r, c) else COL_EDGE
-        draw.ellipse(
-            (x-RADIUS, y-RADIUS, x+RADIUS, y+RADIUS),
-            fill=fill, outline=outline, width=3
-        )
+        fill    = COL_PEG if board.get((r, c)) == 1 else COL_HOLE
+        outline = COL_SEL if selected == (r, c) else COL_EDGE
+        draw.ellipse((x-RADIUS, y-RADIUS, x+RADIUS, y+RADIUS),
+                     fill=fill, outline=outline, width=3)
     return img
 
-# ---------- כותרת ----------
-st.title("🧠 מחשבת – Peg Solitaire בלחיצה על הלוח")
+# =============================================================================
+# 🏷  כותרת
+# =============================================================================
+st.title("🧠 מחשבת – Peg Solitaire בלחיצה")
 
-# ---------- ציור הלוח כרקע של Canvas ----------
+# =============================================================================
+# 🎨  קנבס אינטראקטיבי
+# =============================================================================
 board_img = render_board(st.session_state.game.board, st.session_state.sel)
+
 canvas = st_canvas(
     background_image=board_img,
-    update_streamlit=True,
     height=SIZE,
     width=SIZE,
-    drawing_mode="transform",   # לא מוסיף צורות, רק קליקים
-    key="board_canvas"
+    drawing_mode="point",          # לוכד לחיצות עכבר (יוצר 'point' קטן)
+    point_display_radius=1,        # נקודה מיקרוסקופית
+    update_streamlit=True,
+    key="board_canvas",
 )
 
-# ---------- טיפול בלחיצה ----------
-if canvas.json_data and canvas.json_data["objects"]:
-    obj = canvas.json_data["objects"][-1]
-    # קואורדינטות יחסיות
-    x, y = obj["left"], obj["top"]
-    col = int(x // CELL)
-    row = int(y // CELL)
-    pos = (row, col)
+# =============================================================================
+# 👆  טיפול בלחיצה
+# =============================================================================
+# אם התווסף אובייקט חדש (point) מאז הריצה הקודמת
+if canvas.json_data:
+    objects = canvas.json_data["objects"]
+    if len(objects) > st.session_state.obj_cnt:
+        # קואורדינטות של האובייקט האחרון שנוסף
+        obj     = objects[-1]
+        x_px    = obj["left"]
+        y_px    = obj["top"]
+        col     = int(x_px // CELL)
+        row     = int(y_px // CELL)
+        click   = (row, col)
+        st.session_state.obj_cnt = len(objects)   # עדכון מונה
 
-    if pos in Board.LEGAL_POSITIONS:
-        game = st.session_state.game
-        if st.session_state.sel is None:                # לחיצה ראשונה → בחר פין
-            if game.board.get(pos) == 1:
-                st.session_state.sel = pos
-                st.experimental_rerun()                 # צייר מחדש עם קו מתאר כחול
-        else:                                           # לחיצה שנייה → נסה מהלך
-            from_pos = st.session_state.sel
-            to_pos   = pos
-            applied, _, _, _ = game.apply_move(from_pos, to_pos)
-            st.session_state.sel = None
-            if applied:
-                st.success(f"המהלך בוצע: {from_pos} ➝ {to_pos}")
+        if click in Board.LEGAL_POSITIONS:
+            game = st.session_state.game
+            # שלב ראשון – בחירת פיון
+            if st.session_state.sel is None:
+                if game.board.get(click) == 1:
+                    st.session_state.sel = click
+                    st.experimental_rerun()
+            # שלב שני – ניסיון קפיצה
             else:
-                st.error("מהלך לא חוקי")
-            st.experimental_rerun()                     # רענן תצוגה
+                from_pos = st.session_state.sel
+                to_pos   = click
+                applied, _, _, _ = game.apply_move(from_pos, to_pos)
+                st.session_state.sel = None
+                if applied:
+                    st.success(f"המהלך בוצע: {from_pos} ➝ {to_pos}")
+                else:
+                    st.error("מהלך לא חוקי")
+                # מנקים את הקנבס מאובייקטים כדי שלא ייגדלו לנצח
+                st.session_state.obj_cnt = 0
+                st.experimental_rerun()
 
-# ---------- כפתורי שליטה ----------
+# =============================================================================
+# 🔘  כפתורי שליטה
+# =============================================================================
 col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("↩️ Undo", disabled=not st.session_state.game.move_history):
@@ -325,22 +361,25 @@ with col2:
 with col3:
     if st.button("🔄 Reset"):
         st.session_state.game.reset()
+        st.session_state.sel = None
+        st.session_state.obj_cnt = 0
         st.experimental_rerun()
 
-# ---------- סטטוס ולוג ----------
+# =============================================================================
+# ℹ️  סטטוס ולוג
+# =============================================================================
 game = st.session_state.game
 peg_cnt  = game.board.count_pegs()
 move_cnt = len(game.move_log)
 
 if game.is_win():
-    st.success("🎉 ניצחון! פיון יחיד במרכז!")
+    st.success("🎉 ניצחון! נשאר פיון יחיד במרכז.")
 elif game.is_game_over():
-    st.warning("🛑 אין מהלכים חוקיים – נסה מחדש.")
+    st.warning("🛑 אין מהלכים חוקיים – נסה שוב.")
 else:
     st.info(f"פינים: {peg_cnt} | מהלכים: {move_cnt}")
 
 with st.expander("📜 לוג מהלכים"):
     for i, (f, o, t) in enumerate(game.export_move_log(), 1):
         st.write(f"{i:2}: {f} ➝ {t} (דרך {o})")
-
 
