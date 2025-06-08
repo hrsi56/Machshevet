@@ -236,87 +236,87 @@ class Game:
     def set_custom_metadata(self, key, value):
         self.custom_metadata[key] = value
 
+
+
+import streamlit as st
 from streamlit_drawable_canvas import st_canvas
+import matplotlib.pyplot as plt
+from pegsolitaire import Board, Game
 
-CELL_SIZE = 60
+# פרמטרים גרפיים
 GRID_SIZE = 7
+CELL_SIZE = 60
 CANVAS_SIZE = GRID_SIZE * CELL_SIZE
-PEG_RADIUS = 20
 
-# אתחול מצב
+# אתחול
 if "game" not in st.session_state:
     st.session_state.game = Game()
 if "selected" not in st.session_state:
     st.session_state.selected = None
 
-st.title("🧠 מחשבת – Peg Solitaire עם לחיצה על הלוח")
+st.title("🧠 מחשבת - Peg Solitaire בלחיצה")
 
-# ציור לוח כקנבס
+# ציור הלוח
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.set_xlim(0, GRID_SIZE)
+ax.set_ylim(0, GRID_SIZE)
+ax.set_aspect("equal")
+ax.axis("off")
+
+# צייר את הלוח
+for r in range(7):
+    for c in range(7):
+        pos = (r, c)
+        if pos not in Board.LEGAL_POSITIONS:
+            continue
+        val = st.session_state.game.board.get(pos)
+        color = "#FFD600" if val == 1 else "#202020"
+        edge = "#42A5F5" if st.session_state.selected == pos else "black"
+        circ = plt.Circle((c + 0.5, 6.5 - r), 0.4, color=color, ec=edge, lw=2)
+        ax.add_patch(circ)
+
+st.pyplot(fig)
+
+# ציור קנבס שקוף מעל הגרף
 canvas_result = st_canvas(
-    fill_color="rgba(255, 214, 0, 1)",  # צבע פיון
-    stroke_width=2,
-    background_color="#eeeeee",
+    fill_color="rgba(0, 0, 0, 0)",  # שקוף
+    stroke_width=1,
+    background_color="rgba(0,0,0,0)",
     update_streamlit=True,
     height=CANVAS_SIZE,
     width=CANVAS_SIZE,
-    drawing_mode="transform",  # לא מציירים – רק לחיצה
+    drawing_mode="transform",  # רק קליק, לא ציור
     key="canvas",
 )
 
-# ציור גרפי
-import matplotlib.pyplot as plt
+# טיפול בלחיצה
+if canvas_result.json_data and canvas_result.json_data["objects"]:
+    obj = canvas_result.json_data["objects"][-1]
+    x_px = obj["left"]
+    y_px = obj["top"]
 
-def draw_board(canvas):
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.set_xlim(0, 7)
-    ax.set_ylim(0, 7)
-    ax.set_aspect('equal')
-    ax.axis('off')
+    col = int(x_px // CELL_SIZE)
+    row = int(y_px // CELL_SIZE)
+    pos = (row, col)
 
-    for pos in Board.LEGAL_POSITIONS:
-        r, c = pos
-        val = st.session_state.game.board.get(pos)
-        x = c + 0.5
-        y = 6.5 - r  # כדי ש־(0,0) יהיה למעלה
-        color = "#FFD600" if val == 1 else "#202020"
-        edge = "#42A5F5" if st.session_state.selected == pos else "black"
-        circ = plt.Circle((x, y), 0.3, color=color, ec=edge, lw=2)
-        ax.add_patch(circ)
-
-    st.pyplot(fig)
-
-draw_board(canvas_result)
-
-# לחיצה: מחשוב תא
-if canvas_result and canvas_result.json_data and "objects" in canvas_result.json_data:
-    # קבלת קואורדינטות לחיצה אחרונה
-    objs = canvas_result.json_data["objects"]
-    if objs:
-        obj = objs[-1]
-        x, y = obj["left"], obj["top"]
-        col = int(x // CELL_SIZE)
-        row = int(y // CELL_SIZE)
-        clicked = (row, col)
-
-        if clicked in Board.LEGAL_POSITIONS:
-            if st.session_state.selected is None:
-                # שלב ראשון – בחירת פיון
-                if st.session_state.game.board.get(clicked) == 1:
-                    st.session_state.selected = clicked
-                    st.info(f"נבחר פיון מ: {clicked}")
-            else:
-                # שלב שני – ניסיון קפיצה
-                from_pos = st.session_state.selected
-                to_pos = clicked
-                applied, reward, done, info = st.session_state.game.apply_move(from_pos, to_pos)
-                if applied:
-                    st.success(f"המהלך בוצע: {from_pos} ➝ {to_pos}")
-                else:
-                    st.error("מהלך לא חוקי!")
-                st.session_state.selected = None
+    if pos in Board.LEGAL_POSITIONS:
+        board = st.session_state.game.board
+        if st.session_state.selected is None:
+            if board.get(pos) == 1:
+                st.session_state.selected = pos
+                st.info(f"נבחר פיון מ: {pos}")
+        else:
+            from_pos = st.session_state.selected
+            to_pos = pos
+            applied, _, done, _ = st.session_state.game.apply_move(from_pos, to_pos)
+            st.session_state.selected = None
+            if applied:
+                st.success(f"מהלך בוצע: {from_pos} ➝ {to_pos}")
                 st.rerun()
+            else:
+                st.error("מהלך לא חוקי")
 
-# כפתורי שליטה
+# כפתורים
 col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("↩️ Undo"):
@@ -343,7 +343,6 @@ elif st.session_state.game.is_game_over():
     st.warning("🛑 אין מהלכים חוקיים – נסה מחדש.")
 else:
     st.info(f"פינים: {peg_count} | מהלכים: {move_count}")
-
 
 # לוג מהלכים
 with st.expander("📜 לוג מהלכים"):
