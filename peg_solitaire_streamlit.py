@@ -241,13 +241,19 @@ from PIL import Image, ImageDraw
 # =============================================================================
 # 🔧  תיקון זמני ל-Streamlit >= 1.30  (image_to_url הוזזה למודול אחר)
 # =============================================================================
+
+# --- Patch for streamlit-drawable-canvas on Streamlit >=1.30 ------------------
 if not hasattr(st.image, "image_to_url"):
-    # שחזור מהיר של הפונקציה – מספיק לטובת streamlit-drawable-canvas
-    from streamlit.runtime.media_file_storage import media_file_manager
-    import types
-    def _image_to_url(self, img, width, clamp):
-        return media_file_manager.add(img, "image/png")
-    st.image.image_to_url = types.MethodType(_image_to_url, st.image)
+    import io, base64, types
+    def _pil_to_data_url(self, img, width, clamp):
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return f"data:image/png;base64,{b64}"
+    st.image.image_to_url = types.MethodType(_pil_to_data_url, st.image)
+# -----------------------------------------------------------------------------
 
 # =============================================================================
 # ⚙️  קבועים גרפיים
