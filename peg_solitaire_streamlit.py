@@ -241,19 +241,6 @@ from streamlit_drawable_canvas import st_canvas
 from PIL import Image, ImageDraw
 
 
-# --- Fix for streamlit>=1.30 where image_to_url moved ---
-if not hasattr(st.image, "image_to_url"):
-    from streamlit.runtime.media_file_storage import media_file_manager
-
-    def _image_to_url(image, width, clamp):
-        # שחזור המימוש הבסיסי (מקוצר) של הפונקציה הישנה
-        from streamlit.runtime.media_file_storage import MediaFileManager
-        return media_file_manager.add(image, mimetype="image/png")
-
-    import types
-    st.image.image_to_url = types.MethodType(_image_to_url, st.image)
-# ---------------------------------------------------------
-
 # ---------- קבועים גרפיים ----------
 GRID = 7
 CELL = 70                     # פיקסלים לתא אחד
