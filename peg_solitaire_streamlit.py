@@ -238,10 +238,7 @@ class Game:
 
 
 
-import streamlit as st
 from streamlit_drawable_canvas import st_canvas
-import matplotlib.pyplot as plt
-from pegsolitaire import Board, Game
 
 # פרמטרים גרפיים
 GRID_SIZE = 7
