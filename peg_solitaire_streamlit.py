@@ -242,30 +242,31 @@ from PIL import Image, ImageDraw
 # 🔧  תיקון זמני ל-Streamlit >= 1.30  (image_to_url הוזזה למודול אחר)
 # =============================================================================
 
-# --- Patch for streamlit-drawable-canvas on Streamlit ≥1.30 -------------------
-import io, base64
-import streamlit.elements.image as _st_img    # המודול שהספרייה בודקת עליו
+import streamlit as st
+
+# --- Monkey-patch for streamlit-drawable-canvas on Streamlit ≥1.30 ------------
+import io
+import base64
+import streamlit.elements.image as _st_img
 
 if not hasattr(_st_img, "image_to_url"):
-    def image_to_url(img, *args, **kwargs):
+    def image_to_url(img, width=None, clamp=False, channels="RGBA", output_format="PNG", **kwargs):
         """
-        Replacement for the removed streamlit.elements.image.image_to_url().
-        Accepts any extra args (width, clamp, ...), ignores them, and returns
-        a data-URL (PNG) for a PIL.Image or bytes-like object.
+        Compatible replacement for Streamlit's removed image_to_url().
+        Accepts all args passed by streamlit-drawable-canvas.
         """
-        if hasattr(img, "convert"):            # PIL.Image
-            if img.mode != "RGBA":
-                img = img.convert("RGBA")
+        if hasattr(img, "convert"):
+            img = img.convert(channels)
             buf = io.BytesIO()
-            img.save(buf, format="PNG")
+            img.save(buf, format=output_format)
             data = buf.getvalue()
-        else:                                  # already bytes
-            data = img
+        else:
+            data = img  # Assume already bytes
         b64 = base64.b64encode(data).decode()
-        return f"data:image/png;base64,{b64}"
+        return f"data:image/{output_format.lower()};base64,{b64}"
 
-    _st_img.image_to_url = image_to_url        # ← בדיוק איפה שהקנבס מחפש
-# ----------------------------------------------------------------------------- # =============================================================================
+    _st_img.image_to_url = image_to_url
+# ------------------------------------------------------------------------------
 # ⚙️  קבועים גרפיים
 # =============================================================================
 GRID      = 7            # 7x7
