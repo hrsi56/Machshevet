@@ -237,111 +237,111 @@ class Game:
         self.custom_metadata[key] = value
 
 
-
 from streamlit_drawable_canvas import st_canvas
+from PIL import Image, ImageDraw
 
-# פרמטרים גרפיים
-GRID_SIZE = 7
-CELL_SIZE = 60
-CANVAS_SIZE = GRID_SIZE * CELL_SIZE
+# ---------- קבועים גרפיים ----------
+GRID = 7
+CELL = 70                     # פיקסלים לתא אחד
+RADIUS = int(CELL*0.38)       # חישוב רדיוס מעגל
+SIZE  = GRID * CELL           # גודל הקנבס (ריבוע)
 
-# אתחול
+COL_PEG   = "#FFD600"
+COL_HOLE  = "#202020"
+COL_EDGE  = "black"
+COL_SEL   = "#42A5F5"
+
+# ---------- אתחול מצב ----------
 if "game" not in st.session_state:
     st.session_state.game = Game()
-if "selected" not in st.session_state:
-    st.session_state.selected = None
+if "sel" not in st.session_state:     # פיון שנבחר
+    st.session_state.sel = None
 
-st.title("🧠 מחשבת - Peg Solitaire בלחיצה")
+# ---------- פונקציה שמחזירה תמונה עדכנית של הלוח ----------
+def render_board(board: Board, selected):
+    img = Image.new("RGB", (SIZE, SIZE), "#eeeeee")
+    draw = ImageDraw.Draw(img)
 
-# ציור הלוח
-fig, ax = plt.subplots(figsize=(5, 5))
-ax.set_xlim(0, GRID_SIZE)
-ax.set_ylim(0, GRID_SIZE)
-ax.set_aspect("equal")
-ax.axis("off")
+    for (r, c) in Board.LEGAL_POSITIONS:
+        x = c*CELL + CELL//2
+        y = r*CELL + CELL//2
+        fill = COL_PEG if board.get((r, c)) == 1 else COL_HOLE
+        outline = COL_SEL if selected==(r, c) else COL_EDGE
+        draw.ellipse(
+            (x-RADIUS, y-RADIUS, x+RADIUS, y+RADIUS),
+            fill=fill, outline=outline, width=3
+        )
+    return img
 
-# צייר את הלוח
-for r in range(7):
-    for c in range(7):
-        pos = (r, c)
-        if pos not in Board.LEGAL_POSITIONS:
-            continue
-        val = st.session_state.game.board.get(pos)
-        color = "#FFD600" if val == 1 else "#202020"
-        edge = "#42A5F5" if st.session_state.selected == pos else "black"
-        circ = plt.Circle((c + 0.5, 6.5 - r), 0.4, color=color, ec=edge, lw=2)
-        ax.add_patch(circ)
+# ---------- כותרת ----------
+st.title("🧠 מחשבת – Peg Solitaire בלחיצה על הלוח")
 
-st.pyplot(fig)
-
-# ציור קנבס שקוף מעל הגרף
-canvas_result = st_canvas(
-    fill_color="rgba(0, 0, 0, 0)",  # שקוף
-    stroke_width=1,
-    background_color="rgba(0,0,0,0)",
+# ---------- ציור הלוח כרקע של Canvas ----------
+board_img = render_board(st.session_state.game.board, st.session_state.sel)
+canvas = st_canvas(
+    background_image=board_img,
     update_streamlit=True,
-    height=CANVAS_SIZE,
-    width=CANVAS_SIZE,
-    drawing_mode="transform",  # רק קליק, לא ציור
-    key="canvas",
+    height=SIZE,
+    width=SIZE,
+    drawing_mode="transform",   # לא מוסיף צורות, רק קליקים
+    key="board_canvas"
 )
 
-# טיפול בלחיצה
-if canvas_result.json_data and canvas_result.json_data["objects"]:
-    obj = canvas_result.json_data["objects"][-1]
-    x_px = obj["left"]
-    y_px = obj["top"]
-
-    col = int(x_px // CELL_SIZE)
-    row = int(y_px // CELL_SIZE)
+# ---------- טיפול בלחיצה ----------
+if canvas.json_data and canvas.json_data["objects"]:
+    obj = canvas.json_data["objects"][-1]
+    # קואורדינטות יחסיות
+    x, y = obj["left"], obj["top"]
+    col = int(x // CELL)
+    row = int(y // CELL)
     pos = (row, col)
 
     if pos in Board.LEGAL_POSITIONS:
-        board = st.session_state.game.board
-        if st.session_state.selected is None:
-            if board.get(pos) == 1:
-                st.session_state.selected = pos
-                st.info(f"נבחר פיון מ: {pos}")
-        else:
-            from_pos = st.session_state.selected
-            to_pos = pos
-            applied, _, done, _ = st.session_state.game.apply_move(from_pos, to_pos)
-            st.session_state.selected = None
+        game = st.session_state.game
+        if st.session_state.sel is None:                # לחיצה ראשונה → בחר פין
+            if game.board.get(pos) == 1:
+                st.session_state.sel = pos
+                st.experimental_rerun()                 # צייר מחדש עם קו מתאר כחול
+        else:                                           # לחיצה שנייה → נסה מהלך
+            from_pos = st.session_state.sel
+            to_pos   = pos
+            applied, _, _, _ = game.apply_move(from_pos, to_pos)
+            st.session_state.sel = None
             if applied:
-                st.success(f"מהלך בוצע: {from_pos} ➝ {to_pos}")
-                st.rerun()
+                st.success(f"המהלך בוצע: {from_pos} ➝ {to_pos}")
             else:
                 st.error("מהלך לא חוקי")
+            st.experimental_rerun()                     # רענן תצוגה
 
-# כפתורים
+# ---------- כפתורי שליטה ----------
 col1, col2, col3 = st.columns(3)
 with col1:
-    if st.button("↩️ Undo"):
+    if st.button("↩️ Undo", disabled=not st.session_state.game.move_history):
         st.session_state.game.undo()
-        st.session_state.selected = None
-        st.rerun()
+        st.experimental_rerun()
 with col2:
-    if st.button("↪️ Redo"):
+    if st.button("↪️ Redo", disabled=not st.session_state.game.redo_stack):
         st.session_state.game.redo()
-        st.session_state.selected = None
-        st.rerun()
+        st.experimental_rerun()
 with col3:
     if st.button("🔄 Reset"):
         st.session_state.game.reset()
-        st.session_state.selected = None
-        st.rerun()
+        st.experimental_rerun()
 
-# סטטוס
-peg_count = st.session_state.game.board.count_pegs()
-move_count = len(st.session_state.game.move_log)
-if st.session_state.game.is_win():
+# ---------- סטטוס ולוג ----------
+game = st.session_state.game
+peg_cnt  = game.board.count_pegs()
+move_cnt = len(game.move_log)
+
+if game.is_win():
     st.success("🎉 ניצחון! פיון יחיד במרכז!")
-elif st.session_state.game.is_game_over():
+elif game.is_game_over():
     st.warning("🛑 אין מהלכים חוקיים – נסה מחדש.")
 else:
-    st.info(f"פינים: {peg_count} | מהלכים: {move_count}")
+    st.info(f"פינים: {peg_cnt} | מהלכים: {move_cnt}")
 
-# לוג מהלכים
 with st.expander("📜 לוג מהלכים"):
-    for idx, (f, o, t) in enumerate(st.session_state.game.export_move_log(), 1):
-        st.markdown(f"{idx:2}: {f} ➝ {t} (דרך {o})")
+    for i, (f, o, t) in enumerate(game.export_move_log(), 1):
+        st.write(f"{i:2}: {f} ➝ {t} (דרך {o})")
+
+
