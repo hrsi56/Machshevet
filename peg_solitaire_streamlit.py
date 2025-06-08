@@ -236,6 +236,12 @@ class Game:
     def set_custom_metadata(self, key, value):
         self.custom_metadata[key] = value
 
+from streamlit_drawable_canvas import st_canvas
+
+CELL_SIZE = 60
+GRID_SIZE = 7
+CANVAS_SIZE = GRID_SIZE * CELL_SIZE
+PEG_RADIUS = 20
 
 # אתחול מצב
 if "game" not in st.session_state:
@@ -243,66 +249,90 @@ if "game" not in st.session_state:
 if "selected" not in st.session_state:
     st.session_state.selected = None
 
+st.title("🧠 מחשבת – Peg Solitaire עם לחיצה על הלוח")
 
-def draw_board(board: Board, selected_pos=None):
+# ציור לוח כקנבס
+canvas_result = st_canvas(
+    fill_color="rgba(255, 214, 0, 1)",  # צבע פיון
+    stroke_width=2,
+    background_color="#eeeeee",
+    update_streamlit=True,
+    height=CANVAS_SIZE,
+    width=CANVAS_SIZE,
+    drawing_mode="transform",  # לא מציירים – רק לחיצה
+    key="canvas",
+)
+
+# ציור גרפי
+import matplotlib.pyplot as plt
+
+def draw_board(canvas):
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.set_xlim(-1, 7)
-    ax.set_ylim(-1, 7)
+    ax.set_xlim(0, 7)
+    ax.set_ylim(0, 7)
     ax.set_aspect('equal')
     ax.axis('off')
 
-    for r in range(7):
-        for c in range(7):
-            pos = (r, c)
-            val = board.get(pos)
-            if val is None:
-                continue
-            color = "#FFD600" if val == 1 else "#202020"
-            edge = "#42A5F5" if selected_pos == pos else "black"
-            circle = plt.Circle((c, 6 - r), 0.35, color=color, ec=edge, lw=2)
-            ax.add_patch(circle)
+    for pos in Board.LEGAL_POSITIONS:
+        r, c = pos
+        val = st.session_state.game.board.get(pos)
+        x = c + 0.5
+        y = 6.5 - r  # כדי ש־(0,0) יהיה למעלה
+        color = "#FFD600" if val == 1 else "#202020"
+        edge = "#42A5F5" if st.session_state.selected == pos else "black"
+        circ = plt.Circle((x, y), 0.3, color=color, ec=edge, lw=2)
+        ax.add_patch(circ)
 
     st.pyplot(fig)
 
+draw_board(canvas_result)
 
-st.title("🧠 משחק מחשבת – Peg Solitaire")
+# לחיצה: מחשוב תא
+if canvas_result and canvas_result.json_data and "objects" in canvas_result.json_data:
+    # קבלת קואורדינטות לחיצה אחרונה
+    objs = canvas_result.json_data["objects"]
+    if objs:
+        obj = objs[-1]
+        x, y = obj["left"], obj["top"]
+        col = int(x // CELL_SIZE)
+        row = int(y // CELL_SIZE)
+        clicked = (row, col)
 
-draw_board(st.session_state.game.board, st.session_state.selected)
+        if clicked in Board.LEGAL_POSITIONS:
+            if st.session_state.selected is None:
+                # שלב ראשון – בחירת פיון
+                if st.session_state.game.board.get(clicked) == 1:
+                    st.session_state.selected = clicked
+                    st.info(f"נבחר פיון מ: {clicked}")
+            else:
+                # שלב שני – ניסיון קפיצה
+                from_pos = st.session_state.selected
+                to_pos = clicked
+                applied, reward, done, info = st.session_state.game.apply_move(from_pos, to_pos)
+                if applied:
+                    st.success(f"המהלך בוצע: {from_pos} ➝ {to_pos}")
+                else:
+                    st.error("מהלך לא חוקי!")
+                st.session_state.selected = None
+                st.rerun()
 
+# כפתורי שליטה
 col1, col2, col3 = st.columns(3)
-
 with col1:
     if st.button("↩️ Undo"):
         st.session_state.game.undo()
         st.session_state.selected = None
+        st.rerun()
 with col2:
     if st.button("↪️ Redo"):
         st.session_state.game.redo()
         st.session_state.selected = None
+        st.rerun()
 with col3:
     if st.button("🔄 Reset"):
         st.session_state.game.reset()
         st.session_state.selected = None
-
-# בחירת פין ומהלך
-st.markdown("## בחר פין ואז יעד לקפיצה")
-all_moves = st.session_state.game.get_legal_moves()
-peg_options = list({from_pos for from_pos, _, _ in all_moves})
-peg = st.selectbox("בחר פיון", [(None, "בחר")] + [(p, str(p)) for p in peg_options], format_func=lambda x: x[1])
-if peg[0]:
-    st.session_state.selected = peg[0]
-
-if st.session_state.selected:
-    possible_targets = [to_pos for from_pos, to_pos, _ in all_moves if from_pos == st.session_state.selected]
-    move = st.selectbox("לאן לקפוץ?", [(None, "בחר יעד")] + [(p, str(p)) for p in possible_targets], format_func=lambda x: x[1])
-    if move[0]:
-        applied, reward, done, info = st.session_state.game.apply_move(st.session_state.selected, move[0])
-        if applied:
-            st.success("מהלך בוצע!")
-            st.session_state.selected = None
-            st.rerun()
-        else:
-            st.error("מהלך לא חוקי!")
+        st.rerun()
 
 # סטטוס
 peg_count = st.session_state.game.board.count_pegs()
@@ -313,6 +343,7 @@ elif st.session_state.game.is_game_over():
     st.warning("🛑 אין מהלכים חוקיים – נסה מחדש.")
 else:
     st.info(f"פינים: {peg_count} | מהלכים: {move_count}")
+
 
 # לוג מהלכים
 with st.expander("📜 לוג מהלכים"):
