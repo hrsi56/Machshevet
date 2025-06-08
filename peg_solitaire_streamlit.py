@@ -242,28 +242,30 @@ from PIL import Image, ImageDraw
 # 🔧  תיקון זמני ל-Streamlit >= 1.30  (image_to_url הוזזה למודול אחר)
 # =============================================================================
 
-# --- Patch for streamlit-drawable-canvas on Streamlit >= 1.30 -----------------
+# --- Patch for streamlit-drawable-canvas on Streamlit ≥1.30 -------------------
 import io, base64
-import streamlit.elements.image as _st_img  # זה המודול שהספרייה בודקת
+import streamlit.elements.image as _st_img    # המודול שהספרייה בודקת עליו
 
 if not hasattr(_st_img, "image_to_url"):
-    def image_to_url(img, width=None, clamp=False):
-        """Return a data-URL (PNG) for a given PIL image – replacement for the
-        removed streamlit.elements.image.image_to_url()."""
-        if hasattr(img, "convert"):           # PIL.Image
+    def image_to_url(img, *args, **kwargs):
+        """
+        Replacement for the removed streamlit.elements.image.image_to_url().
+        Accepts any extra args (width, clamp, ...), ignores them, and returns
+        a data-URL (PNG) for a PIL.Image or bytes-like object.
+        """
+        if hasattr(img, "convert"):            # PIL.Image
             if img.mode != "RGBA":
                 img = img.convert("RGBA")
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             data = buf.getvalue()
-        else:                                 # Already bytes-like
+        else:                                  # already bytes
             data = img
         b64 = base64.b64encode(data).decode()
         return f"data:image/png;base64,{b64}"
 
-    _st_img.image_to_url = image_to_url      # ← מוסיף בדיוק במקום שהספרייה מחפשת
-# -----------------------------------------------------------------------------
-# =============================================================================
+    _st_img.image_to_url = image_to_url        # ← בדיוק איפה שהקנבס מחפש
+# ----------------------------------------------------------------------------- # =============================================================================
 # ⚙️  קבועים גרפיים
 # =============================================================================
 GRID      = 7            # 7x7
