@@ -1,4 +1,0 @@
-# אחרונה שעובדת בלי Monkey-patch – מומלץ בענן. אפשר להסיר ש׳=…׳ ולהשתמש בתיקון שבקוד.
-streamlit
-streamlit-drawable-canvas==0.9.2
-pillow
