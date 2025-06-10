@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Tuple, List, Union
 import numpy as np
+from torch.amp import GradScaler, autocast
 
 Pos = Tuple[int, int]
 
@@ -693,8 +694,7 @@ class _Node:
 class MCTS:
     """
     PUCT-based Monte-Carlo Tree Search, AlphaZero style.
-    מחפש את מדיניות π על ידי ביקורי צמתים.
-    גרסה זו ממוטבת לביצועים על ידי שכפול סביבה יחיד.
+    עובד על-פי ביקורי צמתים, תומך ב-root Dirichlet noise, אופטימלי לביצועים.
     """
 
     def __init__(
@@ -729,44 +729,33 @@ class MCTS:
             add_noise=self.root_noise,
         )
 
-        # 🚀 שיפור מרכזי: שכפול הסביבה פעם אחת בלבד, מחוץ ללולאה הראשית
-        env_cpy = self.env.clone_state()
-
         for _ in range(self.sims):
+            # לכל סימולציה משכפלים סביבה חדשה מהשורש.
+            env_cpy = self.env.clone_state()
             node = root
             path = [root]
+            done = False
 
             # -------- 1. Selection (בחירה) -------- #
-            # יורדים במורד העץ עד לעלה (צומת ללא ילדים)
-            while node.children:
+            while node.children and not done:
                 act_idx, node = self._select(node)
-                # מבצעים את המהלך על הסביבה המשוכפלת
-                env_cpy.step(self.action_space.from_index(act_idx))
+                obs, reward, done, _ = env_cpy.step(self.action_space.from_index(act_idx))
                 path.append(node)
 
-            # -------- 2. Expansion & Evaluation (הרחבה והערכה) -------- #
-            # אם המשחק לא הסתיים, מרחיבים את העלה ומקבלים הערכת v מהרשת
-            if not env_cpy.done:
+            # -------- 2. Expansion & Evaluation -------- #
+            if not done:
                 obs = env_cpy.encode_observation()
                 node.children = self._expand(obs, env_cpy.get_legal_actions()).children
                 v = self._evaluate(obs)
             else:
-                # אם המשחק הסתיים, הערך הוא התגמול הסופי
-                # (בהנחה שהסביבה מחזירה אותו. כאן נשתמש בפתרון פשוט)
+                # במשחק חד-שחקן: הערך הוא פשוט התגמול של המצב הסופי.
                 v = 1.0 if env_cpy.game.is_win() else -1.0
 
-            # -------- 3. Backpropagation (פעפוע לאחור) -------- #
-            for n in reversed(path):
+            # -------- 3. Backpropagation -------- #
+            # (אין צורך להחליף סימן – חד שחקן)
+            for n in path:
                 n.visit += 1
                 n.value_sum += v
-                v = -v  # הערך מתהפך בכל צעד עבור השחקן השני (לא רלוונטי למשחק יחיד, אך נוהג טוב)
-
-            # -------- 4. Reset State (איפוס מצב) -------- #
-            # 🚀 שיפור מרכזי: במקום לשכפל שוב, מבטלים את המהלכים כדי לחזור לשורש
-            # מספר הצעדים שבוצעו הוא כמספר הצמתים בנתיב פחות השורש
-            num_moves_made = len(path) - 1
-            for _ in range(num_moves_made):
-                env_cpy.game.undo()  # תלוי במימוש undo במחלקת Game
 
         # ------- חישוב מדיניות היעד π מביקורי הצמתים -------
         visits = np.array([child.visit for idx, child in sorted(root.children.items())])
@@ -787,7 +776,6 @@ class MCTS:
 
     @torch.no_grad()
     def _evaluate(self, obs: np.ndarray) -> float:
-        """ מעביר תצפית ברשת ומחזיר את ערך המצב v. """
         x = torch.tensor(obs, dtype=torch.float32, device=self.device) \
             .permute(2, 0, 1).unsqueeze(0).contiguous()
         _, v = self.model(x)
@@ -798,13 +786,11 @@ class MCTS:
             obs: np.ndarray,
             legal: List["Action"],
             add_noise: bool = False,
-    ) -> _Node:
-        """ מרחיב צומת: מריץ את הרשת, מייצר צמתי ילדים עם הסתברויות prior. """
-        # קטע זה נשאר ללא שינוי מהותי
+    ) -> "_Node":
         x = torch.tensor(obs, dtype=torch.float32, device=self.device) \
             .permute(2, 0, 1).unsqueeze(0).contiguous()
         logits, _ = self.model(x)
-        probs = torch.softmax(logits, -1).cpu().numpy().flatten()
+        probs = torch.softmax(logits, -1).cpu().detach().numpy().flatten()
 
         mask = self.action_space.legal_action_mask(legal)
         probs *= mask
@@ -812,7 +798,7 @@ class MCTS:
         # נרמול מחדש לאחר המסוך
         if probs.sum() > 1e-8:
             probs /= probs.sum()
-        else:  # במקרה נדיר שהרשת נותנת 0 לכל המהלכים החוקיים
+        else:
             probs = mask / mask.sum()
 
         if add_noise:
@@ -823,28 +809,23 @@ class MCTS:
                 noisy_probs[legal_indices] = noise
                 probs = (1 - self.noise_ratio) * probs + self.noise_ratio * noisy_probs
 
-        node = _Node(prior=1.0)  # Prior של השורש לא רלוונטי
+        node = _Node(prior=1.0)
         for a in legal:
             idx = self.action_space.to_index(a)
             node.children[idx] = _Node(prior=float(probs[idx]))
         return node
 
-    def _select(self, node: _Node) -> Tuple[int, _Node]:
-        """ בוחר את הפעולה והצומת הבא על פי נוסחת PUCT. """
-        # קטע זה נשאר ללא שינוי
+    def _select(self, node: "_Node") -> Tuple[int, "_Node"]:
         total_sqrt_visits = np.sqrt(node.visit)
         best_score, best_idx = -np.inf, -1
-
         for idx, child in node.children.items():
-            # Q(s,a) + U(s,a)
             q_value = child.value
             u_value = self.c_puct * child.prior * total_sqrt_visits / (1 + child.visit)
             score = q_value + u_value
-
             if score > best_score:
                 best_score, best_idx = score, idx
-
         return best_idx, node.children[best_idx]
+
 
 # ------------------------------------------------------------------ #
 #                               Agent                                #
@@ -866,7 +847,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
 
 try:
     import mlflow
@@ -912,14 +892,67 @@ class AgentAnalyzer:
 # --------------------------------------------------------------------------- #
 # ------------------------------   AGENT   ---------------------------------- #
 # --------------------------------------------------------------------------- #
+# ====================================================================== #
+#                              agent.py                                  #
+# ====================================================================== #
+import os, time, random, math
+from pathlib import Path
+from collections import defaultdict
+from typing import List, Dict, Tuple, Callable, Optional
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+try:
+    import mlflow                           # optional
+    _HAVE_MLFLOW = True
+except ImportError:
+    _HAVE_MLFLOW = False
+
+# type aliases
+Pos    = Tuple[int, int]
+Action = Tuple[int, int, int]
+
+# ---------------------------------------------------------------------- #
+class AgentAnalyzer:
+    """אוסף נתונים במהלך self-play לצורך דיבוג וסטטיסטיקות."""
+    def __init__(self, action_space):
+        self.action_space = action_space
+        self.reset()
+
+    def reset(self):
+        self.records: List[Dict] = []
+
+    def log(self, obs, act_idx, value_est, legal_idx):
+        self.records.append(dict(obs=obs,
+                                 action_idx=int(act_idx),
+                                 value=float(value_est),
+                                 legal=legal_idx))
+
+    def summary(self) -> Dict[str, float]:
+        if not self.records:
+            return {"total_moves": 0}
+        counts = defaultdict(int)
+        for r in self.records:
+            counts[r["action_idx"]] += 1
+        most_common = max(counts.items(), key=lambda kv: kv[1])
+        return {
+            "total_moves": len(self.records),
+            "unique_actions": len(counts),
+            "top_action": self.action_space.from_index(most_common[0]),
+            "top_freq": most_common[1],
+        }
+
+# ---------------------------------------------------------------------- #
 class Agent:
     """
-    AlphaZero-style Agent for Peg-Solitaire.
-    •  self-play עם MCTS
-    •  אימון עם AMP, OneCycleLR, MLflow, checkpointing
-    •  כלי ניתוח (AgentAnalyzer)
+    AlphaZero-style Agent for Peg-Solitaire, תואם MPS/CPU וגם CUDA.
+    - Self-play with MCTS  |  - OneCycleLR training
+    - AMP+GradScaler רק ב-CUDA
+    - MLflow (אופציונלי)  |  - Checkpointing
     """
-
+    # ---------------------------- ctor ---------------------------- #
     def __init__(
         self,
         env: "PegSolitaireEnv",
@@ -930,233 +963,202 @@ class Agent:
         device: str | torch.device = "cpu",
         keep_history: bool = False,
         mlflow_experiment: str | None = None,
-        checkpoint_dir: str = "checkpoints",
+        ckpt_dir: str = "checkpoints",
     ) -> None:
-        self.env = env
-        self.model = model.to(device)
-        self.action_space = action_space
-        self.buffer = buffer
+
         self.device = torch.device(device)
+        self.env           = env
+        self.model         = model.to(self.device)
+        self.action_space  = action_space
+        self.buffer        = buffer
 
         self.mcts = MCTS(
-            env, model, action_space,
+            env, self.model, action_space,
             sims=sims, root_noise=True,
             device=self.device
         )
 
-        # ---------- History / Debug ----------
+        # ---------- bookkeeping ----------
         self.keep_history = keep_history
-        self.episodes: List[Dict] = [] if keep_history else None
+        self.episodes: List[Dict] = [] if keep_history else []
         self.stats = {"episodes": 0, "success": 0, "avg_moves": 0.0}
+        self._global_step = 0
 
-        # ---------- Analyzer (שלב 5) ----------
+        # ---------- infra ----------
+        self.ckpt_dir = Path(ckpt_dir)
+        self.ckpt_dir.mkdir(exist_ok=True)
         self.analyzer = AgentAnalyzer(action_space)
 
-        # ---------- Training infra ----------
-        self.checkpoint_dir = checkpoint_dir
-        self._global_step = 0
-        self._mlflow_experiment = mlflow_experiment
+        # ---------- MLflow ----------
+        self._mlflow_ctx = None
         if _HAVE_MLFLOW and mlflow_experiment:
             mlflow.set_experiment(mlflow_experiment)
+            self._mlflow_ctx = mlflow.start_run()
 
-    # --------------------------------------------------------------------- #
-    # --------------------------- SELF-PLAY -------------------------------- #
-    # --------------------------------------------------------------------- #
-    def _transform_policy(self, p: np.ndarray, rot: int, flip: bool) -> np.ndarray:
-        new_p = np.zeros_like(p)
-        for idx in np.where(p > 1e-8)[0]:
-            prob = p[idx]
-            action = self.action_space.from_index(idx)
-            aug_action = self.env.augment_action(action, rot=rot, flip=flip)
-            new_idx = self.action_space.to_index(aug_action)
-            new_p[new_idx] = prob
-        return new_p
+        # AMP / GradScaler רק אם יש CUDA
+        self._amp_enabled = torch.cuda.is_available()
+        self._scaler = GradScaler(enabled=torch.backends.mps.is_available() )
+    # ------------------------------------------------------------------ #
+    #                         SELF-PLAY EPISODE                          #
+    # ------------------------------------------------------------------ #
+    def _transform_policy(self, π: np.ndarray, rot: int, flip: bool) -> np.ndarray:
+        """סיבוב/היפוך וקטור π כדי להתאים לאוגמנטציה של הלוח."""
+        if rot == 0 and not flip:
+            return π
+        new_π = np.zeros_like(π)
+        for idx, prob in enumerate(π):
+            if prob < 1e-9:
+                continue
+            a = self.action_space.from_index(idx)
+            a_aug = self.env.augment_action(a, rot=rot, flip=flip)
+            new_π[self.action_space.to_index(a_aug)] = prob
+        return new_π
 
     def self_play_episode(self, augment: bool = True) -> None:
         obs, _ = self.env.reset()
-        done = False
+        done, move_cnt, reward = False, 0, 0.0
         states, policies = [], []
-        move_count = 0
-        total_reward = 0.0
         self.analyzer.reset()
 
-        if self.keep_history:
-            rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
+        hist_rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
 
         while not done:
-            move_count += 1
-            tau = 1.0 if move_count < 10 else 0.1
-
+            move_cnt += 1
+            tau = 1.0 if move_cnt < 10 else 0.05           # exploration temperature
             π = self.mcts.run(obs, tau=tau)
+
             legal = self.env.get_legal_actions()
             legal_idx = [self.action_space.to_index(a) for a in legal]
-            π_legal = π[legal_idx]
-            π_legal = π_legal / (π_legal.sum() + 1e-8)
-            act_idx = int(np.random.choice(legal_idx, p=π_legal))
+            π_masked = π[legal_idx];  π_masked /= (π_masked.sum() + 1e-8)
+            act_idx = int(np.random.choice(legal_idx, p=π_masked))
+            action  = self.action_space.from_index(act_idx)
 
-            action = self.action_space.from_index(act_idx)
-            states.append(obs)
-            policies.append(π)
+            states.append(obs);  policies.append(π)
 
-            # ---------- Analyzer instrumentation ----------
+            # --- analyzer ---
             with torch.no_grad():
-                x = torch.tensor(obs, dtype=torch.float32, device=self.device) \
-                      .permute(2, 0, 1).unsqueeze(0)
-                _, value_est = self.model(x)
-                value_est = float(value_est.item())
-            self.analyzer.record(obs, act_idx, value_est, legal_idx)
+                x = torch.tensor(obs, dtype=torch.float32, device=self.device)\
+                      .permute(2,0,1).unsqueeze(0)
+                _, v_est = self.model(x)
+            self.analyzer.log(obs, act_idx, v_est.item(), legal_idx)
 
-            if self.keep_history:
-                rec["moves"].append(action)
+            obs, reward, done, _ = self.env.step(action)
+            hist_rec["moves"].append(action)
 
-            obs, reward, done, info = self.env.step(action)
-            total_reward = reward
-
-        solved = total_reward > 0
-
-        # ------------- history bookkeeping -------------
+        # bookkeeping
+        hist_rec.update({"reward": reward, "solved": reward > 0, "moves_len": move_cnt})
         if self.keep_history:
-            rec.update({"reward": total_reward, "solved": solved,
-                        "moves_len": move_count, "analyzer": self.analyzer.summary()})
-            self.episodes.append(rec)
-            self.stats["episodes"] += 1
-            self.stats["avg_moves"] = (
-                (self.stats["avg_moves"] * (self.stats["episodes"] - 1) + move_count)
-                / self.stats["episodes"]
-            )
-            if solved:
-                self.stats["success"] += 1
+            hist_rec["analyzer"] = self.analyzer.summary()
+            self.episodes.append(hist_rec)
+        self.stats["episodes"] += 1
+        self.stats["avg_moves"] = (
+            self.stats["avg_moves"]*(self.stats["episodes"]-1)+move_cnt
+        )/self.stats["episodes"]
+        if reward > 0:
+            self.stats["success"] += 1
 
-        # ------------- push into replay buffer ----------
+        # push into buffer (with correct π transforms)
         for s, π in zip(states, policies):
             if augment:
                 for rot in range(4):
                     for flip in (False, True):
-                        aug_obs = self.env.augment_observation(s, rot=rot, flip=flip)
-                        aug_π = self._transform_policy(π, rot=rot, flip=flip)
-                        self.buffer.push((aug_obs, aug_π, total_reward))
+                        aug_obs = self.env.augment_observation(s, mode=None)
+                        aug_obs = np.rot90(aug_obs, k=rot, axes=(0,1))
+                        if flip:
+                            aug_obs = np.flip(aug_obs, axis=1)
+                        self.buffer.push((aug_obs, self._transform_policy(π, rot, flip), reward))
             else:
-                self.buffer.push((s, π, total_reward))
+                self.buffer.push((s, π, reward))
 
-    # --------------------------------------------------------------------- #
-    # ----------------------- TRAINING PIPELINE --------------------------- #
-    # --------------------------------------------------------------------- #
-    def _save_checkpoint(self, tag: str) -> None:
-        path = f"{self.checkpoint_dir}/agent_{tag}.pt"
+    # ------------------------------------------------------------------ #
+    #                            TRAINING                                #
+    # ------------------------------------------------------------------ #
+    def _save_ckpt(self, tag: str):
+        path = self.ckpt_dir / f"agent_{tag}.pt"
         torch.save({
+            "step": self._global_step,
             "model": self.model.state_dict(),
-            "global_step": self._global_step,
             "stats": self.stats,
         }, path)
 
-    def _evaluate_agent(self, episodes: int = 10) -> float:
-        """Quick evaluation – % solved over N test episodes (no training)."""
+    def _quick_eval(self, n_ep: int = 5) -> float:
         solved = 0
-        for _ in range(episodes):
-            obs, _ = self.env.reset()
-            done = False
+        for _ in range(n_ep):
+            obs, _ = self.env.reset(); done = False
             while not done:
-                π = self.mcts.run(obs, tau=0.0)         # greedy
-                act_idx = int(np.argmax(π))
-                action = self.action_space.from_index(act_idx)
+                π = self.mcts.run(obs, tau=0.0)
+                action = self.action_space.from_index(int(np.argmax(π)))
                 obs, reward, done, _ = self.env.step(action)
-            if reward > 0:
-                solved += 1
-        return solved / episodes
+            solved += (reward > 0)
+        return solved / n_ep
 
-    # --------------- PUBLIC API (unchanged signature) ------------------- #
     def train(
         self,
         batch: int = 256,
         epochs: int = 1,
         lr: float = 1e-3,
-        log_fn: Optional[Callable[[Dict], None]] = None,
+        log_cb: Optional[Callable[[Dict], None]] = None,
     ) -> None:
-        """
-        אימון רשת המדיניות/ערך:
-        • OneCycleLR
-        • Automatic Mixed Precision (AMP)
-        • MLflow logging
-        • dynamic sims scaling
-        """
+
         if len(self.buffer) < batch:
             return
 
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-        steps_per_epoch = max(1, len(self.buffer) // batch)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=lr,
-            steps_per_epoch=steps_per_epoch, epochs=epochs
+        opt = torch.optim.Adam(self.model.parameters(), lr=lr)
+        sched = torch.optim.lr_scheduler.OneCycleLR(
+            opt, max_lr=lr,
+            steps_per_epoch=max(1, len(self.buffer)//batch),
+            epochs=epochs
         )
-        scaler = GradScaler(enabled=torch.cuda.is_available())
 
-        # -------- MLflow setup --------
-        ml_ctx = (
-            mlflow.start_run() if (_HAVE_MLFLOW and self._mlflow_experiment)
-            else None
-        )
-        if ml_ctx:
-            mlflow.log_params({
-                "batch": batch, "epochs": epochs, "lr": lr,
-                "buffer_size": len(self.buffer), "model": "PegSolitaireNet",
-            })
+        start = time.time()
+        for ep in range(epochs):
+            # scale sims gradually
+            self.mcts.sims = int(self.mcts.sims * (1 + ep/epochs))
 
-        start_time = time.time()
-        for epoch in range(epochs):
-            # dynamic sims: גדל לינארית לאורך האפוקים
-            self.mcts.sims = int(self.mcts.sims * (1 + epoch / max(1, epochs)))
+            obs_t, π_t, z_t = self.buffer.sample_as_tensors(batch, device=self.device)
 
-            obs_batch, pi_batch, z_batch = self.buffer.sample_as_tensors(
-                batch, device=self.device
-            )
-
-            optimizer.zero_grad()
-            with autocast():
-                logits, v_pred = self.model(obs_batch)
-                loss_pol = F.kl_div(
-                    torch.log_softmax(logits, -1), pi_batch,
-                    reduction="batchmean"
-                )
-                loss_val = F.mse_loss(v_pred, z_batch)
+            opt.zero_grad()
+            with autocast(enabled=self._amp_enabled):
+                logits, v_hat = self.model(obs_t)
+                loss_pol = F.kl_div(F.log_softmax(logits, -1), π_t, reduction="batchmean")
+                loss_val = F.mse_loss(v_hat, z_t)
                 loss = loss_pol + loss_val
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
+            if self._amp_enabled:
+                self._scaler.scale(loss).backward()
+                self._scaler.step(opt); self._scaler.update()
+            else:
+                loss.backward(); opt.step()
 
-            self._global_step += 1
+            sched.step(); self._global_step += 1
 
-            # ---------- logging ----------
-            logs = {
+            # ---- logging ----
+            log_dict = {
                 "step": self._global_step,
-                "epoch": epoch,
+                "epoch": ep,
                 "loss": loss.item(),
                 "loss_pol": loss_pol.item(),
                 "loss_val": loss_val.item(),
-                "lr": scheduler.get_last_lr()[0],
+                "lr": sched.get_last_lr()[0],
             }
-            if log_fn:
-                log_fn(logs)
-            if ml_ctx:
+            if log_cb: log_cb(log_dict)
+            if self._mlflow_ctx:
                 mlflow.log_metrics({
                     "loss": loss.item(),
                     "loss_pol": loss_pol.item(),
                     "loss_val": loss_val.item(),
-                    "lr": logs["lr"],
+                    "lr": log_dict["lr"],
                 }, step=self._global_step)
 
-            # ---------- periodic eval & ckpt ----------
-            if (epoch + 1) % max(1, epochs // 5) == 0:
-                success_rate = self._evaluate_agent(episodes=5)
-                if ml_ctx:
-                    mlflow.log_metric("success_rate", success_rate,
-                                      step=self._global_step)
-                self._save_checkpoint(f"e{epoch+1}")
+            # eval & ckpt every 20% of epochs
+            if (ep+1) % max(1, epochs//5) == 0:
+                sr = self._quick_eval()
+                if self._mlflow_ctx:
+                    mlflow.log_metric("success_rate", sr, step=self._global_step)
+                self._save_ckpt(f"e{ep+1:02d}")
 
-        total_time = time.time() - start_time
-        if ml_ctx:
-            mlflow.log_metric("train_time_sec", total_time)
+        if self._mlflow_ctx:
+            mlflow.log_metric("train_time_sec", time.time()-start)
             mlflow.end_run()
 # ------------------------------------------------------------------ #
 #                        Action-Space helper                         #
