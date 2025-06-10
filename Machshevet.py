@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Tuple, List, Union
 import numpy as np
+from torch import autograd, autocast, GradScaler
 
 Pos = Tuple[int, int]
 
@@ -1125,22 +1126,36 @@ class Agent:
             epochs=epochs
         )
 
+        # ---------------- training loop (FP32, no AMP) ---------------- #
         start = time.time()
         for ep in range(epochs):
-            # scale sims gradually
-            self.mcts.sims = int(self.mcts.sims * (1 + ep/epochs))
+            # הגדל מספר הסימולציות אם רצוי
+            self.mcts.sims = int(self.mcts.sims * (1 + ep / max(1, epochs)))
 
+            # ----- דגימה -----
             obs_t, π_t, z_t = self.buffer.sample_as_tensors(batch, device=self.device)
+            # sample_as_tensors כבר מחזיר float32; נוודא:
+            obs_t = obs_t.float().contiguous()
+            π_t = π_t.float().contiguous()
+            z_t = z_t.float().contiguous()
 
             opt.zero_grad()
-            logits, v_hat = self.model(obs_t)
-            loss_pol = F.kl_div(F.log_softmax(logits, -1), π_t, reduction="batchmean")
-            loss_val = F.mse_loss(v_hat, z_t)
-            loss = loss_pol + loss_val
-            loss.backward()
-            opt.step()
 
-            sched.step(); self._global_step += 1
+            logits, v_hat = self.model(obs_t)  # ← FP32
+            loss_pol = F.kl_div(
+                F.log_softmax(logits, dim=1), π_t,
+                reduction="batchmean"
+            )
+            loss_val = F.mse_loss(v_hat, z_t)
+            loss = loss_pol + loss_val  # עדיין FP32, אין .to()
+
+            loss.backward()  # ← גרף נשמר
+            opt.step()
+            sched.step()
+
+            self._global_step += 1
+            # ... (לוג, checkpoint, MLflow) ...
+
 
             # logging
             log = {
