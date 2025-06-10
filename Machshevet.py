@@ -945,14 +945,19 @@ class AgentAnalyzer:
         }
 
 # ---------------------------------------------------------------------- #
+# ========================================================= #
+#                           Agent                           #
+# ========================================================= #
 class Agent:
     """
-    AlphaZero-style Agent for Peg-Solitaire, תואם MPS/CPU וגם CUDA.
-    - Self-play with MCTS  |  - OneCycleLR training
-    - AMP+GradScaler רק ב-CUDA
-    - MLflow (אופציונלי)  |  - Checkpointing
+    AlphaZero-style Agent for Peg-Solitaire.
+    - Self-play with MCTS
+    - Training (OneCycleLR, no AMP)
+    - MLflow optional
+    - Checkpointing, Analyzer
     """
-    # ---------------------------- ctor ---------------------------- #
+
+    # ------------------------- ctor ------------------------ #
     def __init__(
         self,
         env: "PegSolitaireEnv",
@@ -967,10 +972,8 @@ class Agent:
     ) -> None:
 
         self.device = torch.device(device)
-        self.env           = env
-        self.model         = model.to(self.device)
-        self.action_space  = action_space
-        self.buffer        = buffer
+        self.env, self.model = env, model.to(self.device)
+        self.action_space, self.buffer = action_space, buffer
 
         self.mcts = MCTS(
             env, self.model, action_space,
@@ -978,108 +981,96 @@ class Agent:
             device=self.device
         )
 
-        # ---------- bookkeeping ----------
+        # history / debug
         self.keep_history = keep_history
         self.episodes: List[Dict] = [] if keep_history else []
         self.stats = {"episodes": 0, "success": 0, "avg_moves": 0.0}
         self._global_step = 0
 
-        # ---------- infra ----------
-        self.ckpt_dir = Path(ckpt_dir)
-        self.ckpt_dir.mkdir(exist_ok=True)
+        # infra
+        self.ckpt_dir = Path(ckpt_dir);  self.ckpt_dir.mkdir(exist_ok=True)
         self.analyzer = AgentAnalyzer(action_space)
 
-        # ---------- MLflow ----------
+        # MLflow
         self._mlflow_ctx = None
         if _HAVE_MLFLOW and mlflow_experiment:
             mlflow.set_experiment(mlflow_experiment)
             self._mlflow_ctx = mlflow.start_run()
 
-        # AMP / GradScaler רק אם יש CUDA
-        self._amp_enabled = torch.cuda.is_available()
-        self._scaler = GradScaler(enabled=torch.backends.mps.is_available() )
-    # ------------------------------------------------------------------ #
-    #                         SELF-PLAY EPISODE                          #
-    # ------------------------------------------------------------------ #
+    # --------------------- helpers ------------------------ #
     def _transform_policy(self, π: np.ndarray, rot: int, flip: bool) -> np.ndarray:
-        """סיבוב/היפוך וקטור π כדי להתאים לאוגמנטציה של הלוח."""
+        """Rotate/flip policy vector to match board augmentation."""
         if rot == 0 and not flip:
             return π
         new_π = np.zeros_like(π)
         for idx, prob in enumerate(π):
-            if prob < 1e-9:
+            if prob < 1e-9:  # skip near-zero
                 continue
-            a = self.action_space.from_index(idx)
+            a     = self.action_space.from_index(idx)
             a_aug = self.env.augment_action(a, rot=rot, flip=flip)
             new_π[self.action_space.to_index(a_aug)] = prob
         return new_π
 
+    # ------------------ self-play episode ------------------ #
     def self_play_episode(self, augment: bool = True) -> None:
         obs, _ = self.env.reset()
-        done, move_cnt, reward = False, 0, 0.0
+        done, moves, reward = False, 0, 0.0
         states, policies = [], []
         self.analyzer.reset()
-
-        hist_rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
+        rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
 
         while not done:
-            move_cnt += 1
-            tau = 1.0 if move_cnt < 10 else 0.05           # exploration temperature
+            moves += 1
+            tau = 1.0 if moves < 10 else 0.05
             π = self.mcts.run(obs, tau=tau)
 
-            legal = self.env.get_legal_actions()
-            legal_idx = [self.action_space.to_index(a) for a in legal]
-            π_masked = π[legal_idx];  π_masked /= (π_masked.sum() + 1e-8)
-            act_idx = int(np.random.choice(legal_idx, p=π_masked))
+            legal_idx = [self.action_space.to_index(a) for a in self.env.get_legal_actions()]
+            π_mask = π[legal_idx]; π_mask /= (π_mask.sum() + 1e-8)
+            act_idx = int(np.random.choice(legal_idx, p=π_mask))
             action  = self.action_space.from_index(act_idx)
 
-            states.append(obs);  policies.append(π)
+            states.append(obs); policies.append(π)
 
-            # --- analyzer ---
+            # analyzer
             with torch.no_grad():
-                x = torch.tensor(obs, dtype=torch.float32, device=self.device)\
-                      .permute(2,0,1).unsqueeze(0)
-                _, v_est = self.model(x)
+                t = torch.tensor(obs, dtype=torch.float32, device=self.device)\
+                        .permute(2,0,1).unsqueeze(0)
+                _, v_est = self.model(t)
             self.analyzer.log(obs, act_idx, v_est.item(), legal_idx)
 
             obs, reward, done, _ = self.env.step(action)
-            hist_rec["moves"].append(action)
+            rec["moves"].append(action)
 
         # bookkeeping
-        hist_rec.update({"reward": reward, "solved": reward > 0, "moves_len": move_cnt})
+        rec.update({"reward": reward, "solved": reward > 0, "moves_len": moves})
         if self.keep_history:
-            hist_rec["analyzer"] = self.analyzer.summary()
-            self.episodes.append(hist_rec)
+            rec["analyzer"] = self.analyzer.summary()
+            self.episodes.append(rec)
+
         self.stats["episodes"] += 1
-        self.stats["avg_moves"] = (
-            self.stats["avg_moves"]*(self.stats["episodes"]-1)+move_cnt
-        )/self.stats["episodes"]
+        self.stats["avg_moves"] = (self.stats["avg_moves"]*(self.stats["episodes"]-1)+moves)/self.stats["episodes"]
         if reward > 0:
             self.stats["success"] += 1
 
-        # push into buffer (with correct π transforms)
+        # push to buffer
         for s, π in zip(states, policies):
             if augment:
                 for rot in range(4):
                     for flip in (False, True):
-                        aug_obs = self.env.augment_observation(s, mode=None)
-                        aug_obs = np.rot90(aug_obs, k=rot, axes=(0,1))
-                        if flip:
-                            aug_obs = np.flip(aug_obs, axis=1)
-                        self.buffer.push((aug_obs, self._transform_policy(π, rot, flip), reward))
+                        aug_s = np.rot90(s, k=rot, axes=(0,1))
+                        if flip: aug_s = np.flip(aug_s, axis=1)
+                        aug_π = self._transform_policy(π, rot, flip)
+                        self.buffer.push((aug_s, aug_π, reward))
             else:
                 self.buffer.push((s, π, reward))
 
-    # ------------------------------------------------------------------ #
-    #                            TRAINING                                #
-    # ------------------------------------------------------------------ #
+    # ------------------ checkpoint / eval ------------------ #
     def _save_ckpt(self, tag: str):
-        path = self.ckpt_dir / f"agent_{tag}.pt"
         torch.save({
             "step": self._global_step,
             "model": self.model.state_dict(),
             "stats": self.stats,
-        }, path)
+        }, self.ckpt_dir / f"agent_{tag}.pt")
 
     def _quick_eval(self, n_ep: int = 5) -> float:
         solved = 0
@@ -1088,10 +1079,11 @@ class Agent:
             while not done:
                 π = self.mcts.run(obs, tau=0.0)
                 action = self.action_space.from_index(int(np.argmax(π)))
-                obs, reward, done, _ = self.env.step(action)
-            solved += (reward > 0)
+                obs, r, done, _ = self.env.step(action)
+            solved += (r > 0)
         return solved / n_ep
 
+    # ------------------------- train ----------------------- #
     def train(
         self,
         batch: int = 256,
@@ -1118,22 +1110,17 @@ class Agent:
             obs_t, π_t, z_t = self.buffer.sample_as_tensors(batch, device=self.device)
 
             opt.zero_grad()
-            with autocast(enabled=self._amp_enabled):
-                logits, v_hat = self.model(obs_t)
-                loss_pol = F.kl_div(F.log_softmax(logits, -1), π_t, reduction="batchmean")
-                loss_val = F.mse_loss(v_hat, z_t)
-                loss = loss_pol + loss_val
-
-            if self._amp_enabled:
-                self._scaler.scale(loss).backward()
-                self._scaler.step(opt); self._scaler.update()
-            else:
-                loss.backward(); opt.step()
+            logits, v_hat = self.model(obs_t)
+            loss_pol = F.kl_div(F.log_softmax(logits, -1), π_t, reduction="batchmean")
+            loss_val = F.mse_loss(v_hat, z_t)
+            loss = loss_pol + loss_val
+            loss.backward()
+            opt.step()
 
             sched.step(); self._global_step += 1
 
-            # ---- logging ----
-            log_dict = {
+            # logging
+            log = {
                 "step": self._global_step,
                 "epoch": ep,
                 "loss": loss.item(),
@@ -1141,16 +1128,16 @@ class Agent:
                 "loss_val": loss_val.item(),
                 "lr": sched.get_last_lr()[0],
             }
-            if log_cb: log_cb(log_dict)
+            if log_cb: log_cb(log)
             if self._mlflow_ctx:
                 mlflow.log_metrics({
                     "loss": loss.item(),
                     "loss_pol": loss_pol.item(),
                     "loss_val": loss_val.item(),
-                    "lr": log_dict["lr"],
+                    "lr": log["lr"],
                 }, step=self._global_step)
 
-            # eval & ckpt every 20% of epochs
+            # eval & ckpt every 20 %
             if (ep+1) % max(1, epochs//5) == 0:
                 sr = self._quick_eval()
                 if self._mlflow_ctx:
@@ -1160,7 +1147,8 @@ class Agent:
         if self._mlflow_ctx:
             mlflow.log_metric("train_time_sec", time.time()-start)
             mlflow.end_run()
-# ------------------------------------------------------------------ #
+
+            # ------------------------------------------------------------------ #
 #                        Action-Space helper                         #
 # ------------------------------------------------------------------ #
 class PegSolitaireActionSpace:
