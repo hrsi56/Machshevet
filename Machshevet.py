@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Tuple, List, Union
 import numpy as np
-from torch.amp import GradScaler, autocast
 
 Pos = Tuple[int, int]
 
@@ -134,7 +133,7 @@ class ValueNetwork(nn.Module):
         """
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = x.flatten(1)
+        x = x.contiguous().flatten(1)
         x = F.relu(self.fc1(x))
         return self.fc2(x).squeeze(-1)  # -> [B]
 
@@ -531,9 +530,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Tuple
+
+# Assuming ResidualBlock is defined elsewhere and works correctly
+class ResidualBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += identity
+        return F.relu(out)
+
+
 class PegSolitaireNet(nn.Module):
     """
-    ResNet-10 dual-head network עם Attention + Uncertainty.
+    ResNet-10 dual-head network with Attention + Uncertainty.
     Input  : (B,4,7,7)
     Output : π_logits (B,n_actions), v (B,)∈[-1,1]
     """
@@ -541,10 +562,10 @@ class PegSolitaireNet(nn.Module):
         self,
         n_actions: int,
         channels: int = 64,
-        n_res_blocks: int = 10,        # נשאר 10 כברירת-מחדל
+        n_res_blocks: int = 10,
         hidden_value: int = 128,
         dropout_p: float = 0.1,
-        use_layernorm: bool = True,    # מפעיל כברירת-מחדל
+        use_layernorm: bool = True,
         device: str | torch.device = "cpu",
     ) -> None:
         super().__init__()
@@ -580,15 +601,17 @@ class PegSolitaireNet(nn.Module):
         """
         B, C, H, W = features.shape                       # 7×7 לגודל לוח קלאסי
         # attention weights α_{i} ∈ ℝ^{49}, Σα=1
-        attn_logits  = self.attn_conv(features).reshape(B, -1)     # (B,49)
-        attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(1)  # (B,1,49)
+        # Changed: Use torch.flatten instead of .contiguous().reshape
+        attn_logits  = torch.flatten(self.attn_conv(features), start_dim=1)  # (B,49)
+        attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(1)          # (B,1,49)
 
         # flatten feature map → (B,C,49) ואז average pool עם α
-        f_flat   = features.reshape(B, C, -1)                       # (B,C,49)
-        f_weight = (f_flat * attn_weights).sum(dim=2)            # (B,C)
+        # Changed: Use torch.flatten instead of .contiguous().reshape
+        f_flat   = torch.flatten(features, start_dim=2)                     # (B,C,49)
+        f_weight = (f_flat * attn_weights).sum(dim=2)                      # (B,C)
 
         # linear → n_actions
-        return self.pol_fc(f_weight)                             # (B,n_actions)
+        return self.pol_fc(f_weight)                                        # (B,n_actions)
 
     # --------------------------------------------------------------------- #
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -605,13 +628,13 @@ class PegSolitaireNet(nn.Module):
 
         # ----- Value -----
         v = F.relu(self.val_bn(self.val_conv(x)))        # (B,2,7,7)
-        v = v.flatten(1)                        # flatten
+        # Changed: Use torch.flatten instead of .contiguous().flatten
+        v = torch.flatten(v, start_dim=1)                # flatten
         v = self.dropout(F.relu(self.val_fc1(v)))        # MC-Dropout ≈ uncertainty
         v = self.ln_value(v)
         v = torch.tanh(self.val_fc2(v)).squeeze(-1)      # (B,)
 
         return pi_logits, v
-
 
 from collections import deque
 import random
