@@ -134,7 +134,7 @@ class ValueNetwork(nn.Module):
         """
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1)
+        x = x.flatten(1)
         x = F.relu(self.fc1(x))
         return self.fc2(x).squeeze(-1)  # -> [B]
 
@@ -580,11 +580,11 @@ class PegSolitaireNet(nn.Module):
         """
         B, C, H, W = features.shape                       # 7×7 לגודל לוח קלאסי
         # attention weights α_{i} ∈ ℝ^{49}, Σα=1
-        attn_logits  = self.attn_conv(features).view(B, -1)     # (B,49)
+        attn_logits  = self.attn_conv(features).reshape(B, -1)     # (B,49)
         attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(1)  # (B,1,49)
 
         # flatten feature map → (B,C,49) ואז average pool עם α
-        f_flat   = features.view(B, C, -1)                       # (B,C,49)
+        f_flat   = features.reshape(B, C, -1)                       # (B,C,49)
         f_weight = (f_flat * attn_weights).sum(dim=2)            # (B,C)
 
         # linear → n_actions
@@ -605,7 +605,7 @@ class PegSolitaireNet(nn.Module):
 
         # ----- Value -----
         v = F.relu(self.val_bn(self.val_conv(x)))        # (B,2,7,7)
-        v = v.view(v.size(0), -1)                        # flatten
+        v = v.flatten(1)                        # flatten
         v = self.dropout(F.relu(self.val_fc1(v)))        # MC-Dropout ≈ uncertainty
         v = self.ln_value(v)
         v = torch.tanh(self.val_fc2(v)).squeeze(-1)      # (B,)
