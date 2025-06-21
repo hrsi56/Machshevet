@@ -1,13 +1,12 @@
 from __future__ import annotations
-from typing import Dict, Tuple, List, Union
-import numpy as np
-from matplotlib import pyplot as plt
-from torch import autograd, autocast, GradScaler
+
 import pickle
 import tkinter as tk
 from pathlib import Path
 
-Pos = Tuple[int, int]
+import numpy as np
+from matplotlib import pyplot as plt
+
 
 class Board:
     """
@@ -115,12 +114,11 @@ class Board:
                          for c in range(7)) for r in range(7)]
         return "\n".join(rows)
 
-from typing import Tuple, List, Dict, Optional, Callable, Union
+from typing import Tuple
 
 Pos    = Tuple[int, int]           # (row, col)
 Action = Tuple[int, int, int]      # (row, col, dir-idx)
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -141,12 +139,6 @@ class ValueNetwork(nn.Module):
         x = x.contiguous().flatten(1)
         x = F.relu(self.fc1(x))
         return self.fc2(x).squeeze(-1)  # -> [B]
-
-
-from typing import Callable, List, Tuple, Optional, Dict, Union
-
-Pos    = Tuple[int, int]
-Action = Tuple[int, int, int]
 
 
 class Game:
@@ -341,6 +333,12 @@ class Game:
 
     # Game class
 
+    # ------------------------------------------------------------------
+    #  Game._default_reward – PBRS + “step-floor”   (תואם TD-target γ)
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    #  Game._default_reward –  Adaptive-penalty  PBRS
+    # ------------------------------------------------------------------
     def _default_reward(
             self,
             done: bool,
@@ -348,27 +346,42 @@ class Game:
             potential_after: float
     ) -> float:
         """
-        PBRS מלא: ΔΦ בכל צעד + בונוס/קנס סופי חד-פעמי.
+        Reward Shaping (PBRS) - גרסה מוקשחת:
+
+        ΔΦ        = γ·Φ(s') − Φ(s)
+        step_floor = קנס קבוע אם ΔΦ≤0  (מונע ‘דריכה במקום’)
+        bonus_win  = בונוס חד-פעמי על פתרון מלא
+        penalty_*  = קנס סופי פרופורציונלי לכמות הפגים שנותרו
+
+        הערה: חשוב לשמור על אותו γ הן כאן והן ב-TD-target של הרשת.
         """
-        # ייתכן שתרצה להתאים את הגאמא בהתאם לבעיה ולרשת.
-        # ערך נמוך יותר יכול לעודד פתרונות מהירים יותר.
-        # ערך גבוה יותר יכול לעודד למידה לטווח ארוך.
-        gamma = 0.995  # נסה ערך מעט גבוה יותר כדי לתת יותר משקל לעתיד
 
-        # בונוסים/קנסות סופיים. ייתכן שצריך להגדיל/להקטין אותם.
-        # אם הסוכן לא מצליח לפתור, הגדל את term_win או הקטן את term_loss.
-        # אם הסוכן מוצא קיצורי דרך לא רצויים, הקטן את term_win או הגדל את term_loss.
-        term_win = 10.0  # בונוס משמעותי על ניצחון
-        term_loss = -5.0  # קנס משמעותי על הפסד
+        # ---------- היפר-פרמטרים (קל לכוונון) ----------
+        gamma = 0.995  # discount לשינוי הפוטנציאל
+        step_floor = -0.02  # קנס על צעד שלא שיפר
+        bonus_win = +20.0  # פרס חד-פעמי כשנשאר פג יחיד במרכז
+        base_penalty = -3.0  # קנס בסיסי על Game-Over
+        k_pen = 1.0  # תוספת קנס על כל פג נוסף
+        # ------------------------------------------------
 
-        # Δ-potential עבור כל צעד
-        shaped = gamma * potential_after - potential_before
+        # Δ-potential
+        delta_phi = gamma * potential_after - potential_before
 
+        # “צעד נטול-התקדמות” ⇒ קנס קטן
+        reward_step = delta_phi if delta_phi > 0 else step_floor
+
+        # ----------------- טפל במצב סופי -----------------
         if not done:
-            return shaped
+            return float(reward_step)
 
-        # פרס סופי – מתווסף ל-ΔΦ של הצעד האחרון בלבד
-        return shaped + (term_win if self.is_win() else term_loss)
+        # משחק הסתיים
+        if self.is_win():  # פיון יחיד במרכז
+            return float(reward_step + bonus_win)
+
+        # Game-Over ללא פתרון → קנס יחסי לגודל השארית
+        pegs_left = self.board.count_pegs()
+        penalty_stuck = base_penalty - k_pen * (pegs_left - 1)
+        return float(reward_step + penalty_stuck)
 
     def __str__(self) -> str:
         parts = [str(self.board)]
@@ -376,40 +389,39 @@ class Game:
             parts.append(f"Last move: {self.last_move}")
         return "\n".join(parts)
 
-import numpy as np
-from typing import Callable, List, Tuple, Optional, Union
-
-# טיפוסים משותפים
-Pos    = Tuple[int, int]
-Action = Tuple[int, int, int]
-
 
 # ------------------------------------------------------------------
 # 🗺️  STRATEGIC MAPS  (7×7 English board – ערכים ניתנים לכיול)
 # ------------------------------------------------------------------
-import numpy as np
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Union
+# ================================================================
+#  GLOBAL STRATEGIC MAPS  – tuned for maximal solving accuracy
+# ================================================================
 
-CENTRALITY_WEIGHTS = np.array(
-    [[0.0, 0.0, 0.1, 0.1, 0.1, 0.0, 0.0],
-     [0.0, 0.1, 0.2, 0.3, 0.2, 0.1, 0.0],
-     [0.1, 0.2, 0.4, 0.5, 0.4, 0.2, 0.1],
-     [0.1, 0.3, 0.5, 1.0, 0.5, 0.3, 0.1],
-     [0.1, 0.2, 0.4, 0.5, 0.4, 0.2, 0.1],
-     [0.0, 0.1, 0.2, 0.3, 0.2, 0.1, 0.0],
-     [0.0, 0.0, 0.1, 0.1, 0.1, 0.0, 0.0]], dtype=np.float32)
+CENTRALITY_WEIGHTS = np.array([
+    [0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0],
+    [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
+    [0.10,0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
+    [0.10,0.30, 0.50, 1.00, 0.50, 0.30, 0.10],
+    [0.10,0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
+    [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
+    [0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0]], dtype=np.float32)
 
-PAGODA_VALUES = np.array(
-    [[0, 0, 1, 2, 1, 0, 0],
-     [0, 1, 2, 3, 2, 1, 0],
-     [1, 2, 3, 4, 3, 2, 1],
-     [2, 3, 4, 5, 4, 3, 2],
-     [1, 2, 3, 4, 3, 2, 1],
-     [0, 1, 2, 3, 2, 1, 0],
-     [0, 0, 1, 2, 1, 0, 0]], dtype=np.float32)
+PAGODA_VALUES = np.array([
+    [0,0,1,2,1,0,0],
+    [0,1,2,3,2,1,0],
+    [1,2,3,4,3,2,1],
+    [2,3,4,5,4,3,2],
+    [1,2,3,4,3,2,1],
+    [0,1,2,3,2,1,0],
+    [0,0,1,2,1,0,0]], dtype=np.float32)
 
-CORNER_POSITIONS: list[Tuple[int, int]] = [(0, 3), (3, 0), (3, 6), (6, 3)]
-DIRS_JUMP = np.array([[-2, 0], [2, 0], [0, -2], [0, 2]], dtype=np.int8)
+DIRS_JUMP = np.array([[-2,0],[2,0],[0,-2],[0,2]], dtype=np.int8)
+
+CORNER_POSITIONS = [(0,3), (3,0), (3,6), (6,3)]
+EDGE_MASK = ((CENTRALITY_WEIGHTS < 0.25) & (CENTRALITY_WEIGHTS > 0)).astype(np.float32)  # “true” edges
+
+
 
 # ------------------------------------------------------------------
 #  PegSolitaireEnv  (הגרסה המקורית שלך + פוטנציאל מובנה)
@@ -447,57 +459,85 @@ class PegSolitaireEnv:
     #  Φ(s)  –  פוטנציאל מרובד (תיקון bounds-safe ל-isolation)
     # --------------------------------------------------------------
     def _calculate_potential(self, board) -> float:
-        arr = board.as_array().astype(np.float32)
-        mask = self.board_mask
-        pegs = int(arr.sum())
+        """
+        מחשב פונקציית פוטנציאל משולבת לצורך PBRS (Potential-Based Reward Shaping).
+        הפלט שווה ערך ל"מד התקדמות" של מצב הלוח.
 
-        phi_num_pegs = -pegs
+        מרכיבי הפוטנציאל:
+            φ0 : מספר הפגים (ככל שפחות – טוב יותר)
+            φ1 : קירבה למרכז (ממוצע משוקלל של מיקום הפגים)
+            φ2 : ערך Pagoda – מדד להתכנות פתרון
+            φ3 : ענישה על פגים מבודדים, בקצוות ובפינות
+        """
+        arr = board.as_array().astype(np.float32)  # (7, 7)
+        mask = self.board_mask.astype(np.float32)
+        peg_cnt = int(arr.sum())
 
-        phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / max(1.0, pegs)
+        # ---------- φ0 : peg count (שלילי) ----------
+        phi_num = -peg_cnt  # פחות פגים → יותר טוב
+
+        # ---------- φ1 : centrality ----------
+        if peg_cnt == 0:
+            phi_centr = 0.0
+        else:
+            phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / (peg_cnt + 1e-5)
+
+        # ---------- φ2 : pagoda value ----------
         phi_pagoda = (arr * PAGODA_VALUES * mask).sum()
 
-        if pegs == 0:
-            phi_iso = 0.0
+        # ---------- φ3 : isolation, corner & edge penalties ----------
+        if peg_cnt == 0:
+            phi_iso_edge = 0.0
         else:
-            pegs_rc = np.argwhere(arr == 1)  # [[r,c], ...]
-            reachable = np.zeros(len(pegs_rc), dtype=bool)
+            # מיקומי כל הפגים על הלוח
+            rc = np.argwhere(arr == 1)  # (N, 2)
 
-            for dr, dc in DIRS_JUMP:  # 4 כיוונים
-                mid = pegs_rc + (dr // 2, dc // 2)
-                dst = pegs_rc + (dr, dc)
+            reachable = np.zeros(len(rc), dtype=bool)
 
-                in_bounds = (
+            for dr, dc in DIRS_JUMP:  # ארבעת כיווני הקפיצה
+                mid = rc + (dr // 2, dc // 2)
+                dst = rc + (dr, dc)
+
+                valid = (
                         (dst[:, 0] >= 0) & (dst[:, 0] < 7) &
-                        (dst[:, 1] >= 0) & (dst[:, 1] < 7) &
-                        (mid[:, 0] >= 0) & (mid[:, 0] < 7) &
-                        (mid[:, 1] >= 0) & (mid[:, 1] < 7)
+                        (dst[:, 1] >= 0) & (dst[:, 1] < 7)
                 )
-
-                if not in_bounds.any():
+                if not valid.any():
                     continue
 
-                idx = np.where(in_bounds)[0]  # רק בתוך-גבול
+                idv = np.where(valid)[0]
+                dst_v, mid_v = dst[idv], mid[idv]
 
-                # --- התיקון מתבצע כאן ---
-                # השורות השגויות הוסרו. השורה הבאה כבר הייתה נכונה.
-                dst_ok = mask[dst[idx, 0], dst[idx, 1]] == 1
-                mid_ok = mask[mid[idx, 0], mid[idx, 1]] == 1
-                has_peg = arr[mid[idx, 0], mid[idx, 1]] == 1
-                empty_dst = arr[dst[idx, 0], dst[idx, 1]] == 0  # זו השורה המקורית הנכונה
+                cond = (
+                        (mask[dst_v[:, 0], dst_v[:, 1]] == 1) &
+                        (mask[mid_v[:, 0], mid_v[:, 1]] == 1) &
+                        (arr[mid_v[:, 0], mid_v[:, 1]] == 1) &
+                        (arr[dst_v[:, 0], dst_v[:, 1]] == 0)
+                )
+                reachable[idv] |= cond
 
-                reachable[idx] |= (dst_ok & mid_ok & has_peg & empty_dst)
+            isolated = int((~reachable).sum())
+            corners = int(sum(arr[r, c] for r, c in CORNER_POSITIONS))
+            edges = int((arr * EDGE_MASK).sum())
 
-            isolated = (~reachable).sum()
-            corner_pegs = sum(arr[r, c] for r, c in CORNER_POSITIONS)
-            phi_iso = -(5.0 * isolated + 2.0 * corner_pegs)
+            phi_iso_edge = - (5.0 * isolated + 2.0 * corners + 1.0 * edges)
 
-            edge_pegs = (arr * (1 - CENTRALITY_WEIGHTS) * mask).sum()
-            phi_iso -= 0.5 * edge_pegs
+        # ---------- שקלול משוקלל ----------
+        w0, w1, w2, w3 = 1.2, 0.65, 1.0, 0.85  # ניתן לכוונן
+        total_phi = (
+                w0 * phi_num +
+                w1 * phi_centr +
+                w2 * phi_pagoda +
+                w3 * phi_iso_edge
+        )
 
-        w0, w1, w2, w3 = 2.0, 0.5, 1.0, 0.8
-        return w0 * phi_num_pegs + w1 * phi_centr + w2 * phi_pagoda + w3 * phi_iso
+        # ---------- Debug output (אופציונלי) ----------
+        if getattr(self, "debug_potential", False):
+            print(
+                f"[Φ] φ0={phi_num:.2f}, φ1={phi_centr:.2f}, φ2={phi_pagoda:.2f}, φ3={phi_iso_edge:.2f} ⇒ Φ={total_phi:.2f}")
 
-    # ------------------------------------------------------------------
+        return total_phi
+        # ------------------------------------------------------------------
     # כל שאר השיטות שלך נשארו ללא שינוי – העתקנו ככתבן וכלשונן
     # ------------------------------------------------------------------
     def reset(self, state: Optional[Union[dict, "Board"]] = None) -> Tuple[np.ndarray, dict]:
@@ -589,10 +629,6 @@ class PegSolitaireEnv:
 
     def render(self, mode="human"):
         print(self.game.board)
-
-from typing import Tuple
-
-
 
 
 # Assuming ResidualBlock is defined elsewhere and works correctly
@@ -688,92 +724,99 @@ class PegSolitaireNet(nn.Module):
 
         return pi_logits, v
 
-from collections import deque
 
 
-import heapq
 
-import numpy as np
-import random
-import torch
-from typing import List, Tuple
-
-import numpy as np
-import torch
-import heapq
-import itertools
-import random
+import heapq, itertools, random
 from typing import List, Tuple, Optional
-
 import numpy as np
-import random
 import torch
-import heapq
-import itertools
-from typing import List, Tuple, Optional
 
 class ReplayBuffer:
     """
-    Prioritized Experience Replay Buffer (PER) with priority-based forgetting.
-    Efficient heapq-based implementation. Compatible API.
-    Stores (observation, policy π, value z).
+    PER  (α, β)  עם מחיקה לפי priority.
+    Stores (obs, π, G_t)
     """
-    def __init__(self, max_size: int = 50_000, alpha: float = 0.6):
+
+    # ───────────────────────── ctor ─────────────────────────
+    def __init__(self,
+                 max_size: int = 50_000,
+                 alpha   : float = 0.6,
+                 beta    : float = 0.4):
         self.max_size = max_size
-        self.alpha = alpha
-        self.counter = itertools.count()
-        self.heap: List[Tuple[float, int, Tuple[np.ndarray, np.ndarray, float]]] = []
+        self.alpha    = alpha         # כמה “חד” סדר־העדיפויות
+        self.beta     = beta          # לאחז IS-weights
+        self._cnt     = itertools.count()
+        self._heap: List[
+            Tuple[float, int, Tuple[np.ndarray, np.ndarray, float]]
+        ] = []                        # (priority, order, sample)
 
-    def push(self, sample: Tuple[np.ndarray, np.ndarray, float], priority: Optional[float] = None) -> None:
+    # ───────────────────────── helpers ──────────────────────
+    def __len__(self):  return len(self._heap)
+
+    @property           # alias נוח – train() יכול להשתמש ב-_heap או heap
+    def heap(self):     return self._heap
+
+    def _priorities(self) -> np.ndarray:
+        return np.asarray([abs(e[0]) for e in self._heap], np.float32)
+
+    def _probabilities(self) -> np.ndarray:
+        p = self._priorities() ** self.alpha
+        return p / (p.sum() + 1e-8)
+
+    # ───────────────────────── push ─────────────────────────
+    def push(self,
+             sample  : Tuple[np.ndarray, np.ndarray, float],
+             priority: Optional[float] = None) -> None:
+
         if priority is None:
-            priority = max([abs(x[0]) for x in self.heap], default=1.0)
-        entry = (float(priority), next(self.counter), sample)
-        heapq.heappush(self.heap, entry)
-        if len(self.heap) > self.max_size:
-            heapq.heappop(self.heap)
+            priority = max((abs(e[0]) for e in self._heap), default=1.0)
 
-    def sample(self, batch_size: int) -> List[Tuple[np.ndarray, np.ndarray, float]]:
-        # Take a snapshot for consistent indices
-        heap_list = list(self.heap)
-        priorities = np.array([abs(x[0]) for x in heap_list], dtype=np.float32)
-        probs = priorities ** self.alpha
-        probs /= probs.sum() + 1e-8
+        heapq.heappush(self._heap, (float(priority), next(self._cnt), sample))
+        if len(self._heap) > self.max_size:
+            heapq.heappop(self._heap)
 
-        idxs = np.random.choice(len(heap_list), batch_size, p=probs)
-        return [heap_list[i][2] for i in idxs]
-
+    # ──────────────────────── sampling ──────────────────────
     def sample_as_tensors(
         self,
         batch_size: int,
-        device: str = "mps"
+        device    : str = "cpu",
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray]:
-        heap_list = list(self.heap)
-        priorities = np.array([abs(x[0]) for x in heap_list], dtype=np.float32)
-        probs = priorities ** self.alpha
-        probs /= probs.sum() + 1e-8
 
-        idxs = np.random.choice(len(heap_list), batch_size, p=probs)
-        obs = torch.tensor(np.stack([heap_list[i][2][0] for i in idxs]), dtype=torch.float32, device=device).permute(0, 3, 1, 2).contiguous()
-        pi  = torch.tensor(np.stack([heap_list[i][2][1] for i in idxs]), dtype=torch.float32, device=device).contiguous()
-        z   = torch.tensor(np.array([heap_list[i][2][2] for i in idxs]), dtype=torch.float32, device=device).contiguous()
-        return obs, pi, z, idxs
+        if not self._heap:
+            raise RuntimeError("ReplayBuffer is empty")
 
-    def update_priorities(self, indices: np.ndarray, new_priorities: np.ndarray) -> None:
-        """
-        Update priorities by building a new heap with updated priorities.
-        This avoids ValueError and keeps all samples fresh.
-        """
-        heap_list = list(self.heap)
-        for heap_idx, new_prio in zip(indices, new_priorities):
-            old_prio, count, sample = heap_list[heap_idx]
-            heap_list[heap_idx] = (float(new_prio), count, sample)
-        # Rebuild the heap in place (this is O(N), but done rarely)
-        self.heap = heap_list
-        heapq.heapify(self.heap)
+        probs = self._probabilities()
+        idx   = np.random.choice(len(self._heap),
+                                 size=min(batch_size, len(self._heap)),
+                                 p=probs)
 
-    def __len__(self) -> int:
-        return len(self.heap)
+        # unpack
+        obs = torch.tensor(
+            np.stack([self._heap[i][2][0] for i in idx]),
+            dtype=torch.float32, device=device
+        ).permute(0,3,1,2).contiguous()
 
+        pi  = torch.tensor(
+            np.stack([self._heap[i][2][1] for i in idx]),
+            dtype=torch.float32, device=device)
+
+        G_t = torch.tensor(
+            np.asarray([self._heap[i][2][2] for i in idx], np.float32),
+            dtype=torch.float32, device=device)
+
+        return obs, pi, G_t, idx
+
+    # ───────────────────── update priorities ─────────────────
+    def update_priorities(self,
+                          indices      : np.ndarray,
+                          new_priorities: np.ndarray) -> None:
+        # עדכון במקום, ואז heapify
+        for i, p in zip(indices, new_priorities):
+            _, order, sample = self._heap[i]
+            self._heap[i] = (float(p), order, sample)
+
+        heapq.heapify(self._heap)
 
 # הערה: מחלקת Node נשארה ללא שינוי, לכן אין צורך להציגה שוב.
 # אני מניח שהיא זמינה במודול.
@@ -804,7 +847,7 @@ class MCTS:
             env,
             model: "PegSolitaireNet",
             action_space,
-            sims: int = 400,
+            sims: int = 64,
             c_puct: float = 1.5,
             root_noise: bool = True,
             dirichlet_alpha: float = 0.3,
@@ -942,15 +985,8 @@ class MCTS:
 #                               Agent                                #
 # ------------------------------------------------------------------ #
 
-from typing import  Tuple
-
-Pos = Tuple[int, int]
-Action = Tuple[int, int, int]
 
 # agent.py  – industrial-grade version (steps 2-5 applied)
-import time
-from typing import Dict, Tuple, List, Optional, Callable
-
 
 
 try:
@@ -1000,7 +1036,7 @@ class AgentAnalyzer:
 # ====================================================================== #
 #                              agent.py                                  #
 # ====================================================================== #
-import os, time, random, math
+import time, random
 from collections import defaultdict
 from typing import List, Dict, Tuple, Callable, Optional
 
@@ -1066,7 +1102,7 @@ class Agent:
         model: "PegSolitaireNet",
         action_space: "PegSolitaireActionSpace",
         buffer: "ReplayBuffer",
-        sims: int = 33,
+        sims: int = 64,
         device: str | torch.device = "mps",
         keep_history: bool = False,
         mlflow_experiment: str | None = None,
@@ -1114,88 +1150,94 @@ class Agent:
         return new_π
 
     # ------------------ self-play episode ------------------ #
-    def self_play_episode(self, augment: bool = True) -> None:
+    def self_play_episode(
+            self,
+            augment: bool = True,
+            gamma: float = 0.995,
+    ) -> None:
+        """ AlphaZero-style self-play: אוסף (state, π, G_t) """
         obs, _ = self.env.reset()
         done = False
         moves = 0
-        total_reward = 0.0
-        states, policies = [], []
+        states, policies, rewards = [], [], []
 
+        # ---------- ניטור ----------
         self.analyzer.reset()
-        episode_record = {
-            "moves": [],
-            "reward": 0.0,
-            "solved": False,
-            "moves_len": 0,
-        }
+        ep_rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
 
+        # ---------- לולאה ----------
         while not done:
             moves += 1
             tau = 1.0 if moves < 10 else 0.05
 
-            # Compute policy using MCTS
+            # MCTS → π
             π = self.mcts.run(obs, tau=tau)
 
-            # Mask policy probabilities based on legal actions
-            legal_actions = self.env.get_legal_actions()
-            legal_indices = [self.action_space.to_index(a) for a in legal_actions]
-            π_masked = π[legal_indices]
-            π_masked /= np.sum(π_masked) + 1e-8
+            # מסיכת פעולות חוקיות
+            legal = self.env.get_legal_actions()
+            legal_idx = [self.action_space.to_index(a) for a in legal]
+            π_mask = π[legal_idx];
+            π_mask /= π_mask.sum() + 1e-8
+            act_idx = int(np.random.choice(legal_idx, p=π_mask))
+            action = self.action_space.from_index(act_idx)
 
-            # Choose action probabilistically based on masked policy
-            chosen_index = np.random.choice(legal_indices, p=π_masked)
-            action = self.action_space.from_index(chosen_index)
-
-            # Store state and policy for replay buffer
+            # לוג + איסוף
             states.append(obs.copy())
             policies.append(π.copy())
-
-            # Analyzer logging
             with torch.no_grad():
-                tensor_obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
-                tensor_obs = tensor_obs.permute(2, 0, 1).unsqueeze(0).contiguous()
-                _, v_est = self.model(tensor_obs)
+                v_est = self.model(
+                    torch.tensor(obs, dtype=torch.float32, device=self.device)
+                    .permute(2, 0, 1).unsqueeze(0)
+                )[1]
+            self.analyzer.log(obs, act_idx, v_est.item(), legal_idx)
 
-            self.analyzer.log(obs, chosen_index, v_est.item(), legal_indices)
+            # צעד בסביבה
+            obs, r, done, _ = self.env.step(action)
+            rewards.append(float(r))
+            ep_rec["moves"].append(action)
 
-            # Execute chosen action
-            obs, reward, done, _ = self.env.step(action)
-            total_reward = reward
-            episode_record["moves"].append(action)
-
-        # Record the episode outcome
-        episode_record.update({
-            "reward": total_reward,
-            "solved": total_reward > 0,
-            "moves_len": moves,
-        })
-
+        # ---------- סיכום ----------
+        ep_rec.update(
+            reward=float(np.sum(rewards)),
+            solved=self.env.game.is_win(),
+            moves_len=moves,
+        )
         if self.keep_history:
-            episode_record["analyzer"] = self.analyzer.summary()
-            self.episodes.append(episode_record)
+            ep_rec["analyzer"] = self.analyzer.summary()
+            self.episodes.append(ep_rec)
 
-        # Update stats
+        # סטטיסטיקה
         self.stats["episodes"] += 1
         self.stats["avg_moves"] = (
                 (self.stats["avg_moves"] * (self.stats["episodes"] - 1) + moves)
                 / self.stats["episodes"]
         )
-        if total_reward > 0:
+        if ep_rec["solved"]:
             self.stats["success"] += 1
 
-        # Push states, policies, and rewards into the buffer
-        for state, policy in zip(states, policies):
+        # ---------- חישוב G_t ----------
+        returns = np.zeros(len(rewards), dtype=np.float32)
+        G = 0.0
+        for t in reversed(range(len(rewards))):
+            G = rewards[t] + gamma * G
+            returns[t] = G
+
+        # ✅ תמריץ נוסף קל אם הצלחנו (שילוב Reward)
+        if ep_rec["solved"]:
+            returns += 5.0  # בונוס מתון, אפשר גם 3.0 או 10.0 לפי מה שעובד טוב
+
+        # ---------- כתיבה לבאפר ----------
+        for s, π, G in zip(states, policies, returns):
             if augment:
                 for rot in range(4):
                     for flip in (False, True):
-                        augmented_state = np.rot90(state, k=rot, axes=(0, 1))
+                        s_aug = np.rot90(s, k=rot, axes=(0, 1))
                         if flip:
-                            augmented_state = np.flip(augmented_state, axis=1)
-                        augmented_policy = self._transform_policy(policy, rot, flip)
-                        self.buffer.push((augmented_state, augmented_policy, total_reward))
+                            s_aug = np.flip(s_aug, axis=1)
+                        π_aug = self._transform_policy(π, rot, flip)
+                        self.buffer.push((s_aug, π_aug, G))
             else:
-                self.buffer.push((state, policy, total_reward))
-
+                self.buffer.push((s, π, G))
 
     # ------------------ checkpoint / eval ------------------ #
     def _save_ckpt(self, tag: str):
@@ -1224,97 +1266,89 @@ class Agent:
             lr: float = 1e-3,
             log_cb: Optional[Callable[[Dict], None]] = None,
     ) -> None:
-        """
-        מאמן את הרשת תוך שימוש ב־OneCycleLR, כולל MLflow logging ו־Checkpointing.
-        תומך ב־PER עם Importance Sampling Weights.
-        """
+
         if len(self.buffer) < batch:
             return
 
-        opt = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # ───────── opt + sched ─────────
+        wd, beta0 = 1e-4, 0.4  # L2 + βinit
+        params_w, params_b = [], []
+        for n, p in self.model.named_parameters():
+            (params_w if p.ndim > 1 else params_b).append(p)
+        opt = torch.optim.AdamW(
+            [{"params": params_w, "weight_decay": wd},
+             {"params": params_b, "weight_decay": 0.0}],
+            lr=lr
+        )
         sched = torch.optim.lr_scheduler.OneCycleLR(
             opt, max_lr=lr,
             steps_per_epoch=max(1, len(self.buffer) // batch),
             epochs=epochs
         )
 
-        start = time.time()
+        # ───────── סימולציות MCTS דינמיות ─────────
+        if not hasattr(self, "_sims0"):
+            self._sims0 = self.mcts.sims
+        grow, cap = 1.18, 384
 
-        for epoch in range(epochs):
-            self.mcts.sims = int(self.mcts.sims * (1 + epoch / epochs))
+        t0 = time.time()
+        for ep in range(epochs):
 
-            # ==== דגימה עם אינדקסים וחשבון IS weights ====
-            obs_t, pi_t, z_t, indices = self.buffer.sample_as_tensors(batch, device=self.device)
+            self.mcts.sims = min(int(self._sims0 * (grow ** ep)), cap)
 
-            # חשב את חשיבות הדגימות עבור PER-IS
-            # snapshot של priorities
-            heap_list = list(self.buffer.heap)
-            priorities = np.array([abs(x[0]) for x in heap_list], dtype=np.float32)
-            probs = priorities ** self.buffer.alpha
-            probs /= probs.sum() + 1e-8
+            # β –- anneal linearly ל-1.0
+            self.buffer.beta = min(1.0, beta0 + ep / max(1, epochs - 1) * (1.0 - beta0))
 
-            sample_probs = probs[indices]
-            # חישוב IS weights: w_i = (1/N * 1/p_i) ** beta  -- נורמליזציה
-            beta = getattr(self.buffer, 'beta', 0.4)
+            # ───── mini-batch ─────
+            obs, π_t, G_t, idx = self.buffer.sample_as_tensors(batch, self.device)
+
+            probs = self.buffer._probabilities()[idx]  # p_i
             N = len(self.buffer)
-            is_weights = (N * sample_probs) ** (-beta)
-            is_weights /= is_weights.max() + 1e-8
-            is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device).unsqueeze(1)  # (B,1)
+            w_is = (N * probs) ** (-self.buffer.beta)
+            w_is /= w_is.max() + 1e-8
+            w_is = torch.tensor(w_is, dtype=torch.float32,
+                                device=self.device).unsqueeze(1)  # (B,1)
 
-            opt.zero_grad()
-            logits, v_pred = self.model(obs_t)
+            opt.zero_grad(set_to_none=True)
 
-            # --- Policy Loss (לא צריך IS weight, משקלות על value בלבד) ---
-            loss_pol = F.kl_div(
-                F.log_softmax(logits, dim=-1),
-                pi_t,
-                reduction="batchmean"
-            )
-            # --- Value Loss + IS Weights ---
-            td_error = v_pred - z_t
-            loss_val = ((td_error ** 2) * is_weights.squeeze()).mean()
-            loss = loss_pol + loss_val
+            with torch.autocast(
+                    device_type=self.device.type,  # ← מחרוזת: "mps" במקרה שלך
+                    dtype=torch.float16 if self.device.type in ("cuda", "mps") else torch.bfloat16):
+                logits, v_pred = self.model(obs)  # ⬅️  שאר הקוד כ-מוּבָא
+                loss_pol = F.kl_div(F.log_softmax(logits, -1), π_t,
+                                    reduction="batchmean")
+                td = v_pred - G_t
+                loss_val = (w_is.squeeze() * td.pow(2)).mean()
+                loss = loss_pol + loss_val
 
             loss.backward()
-            opt.step()
-
-            # ==== עדכון priorities (PER) ====
-            td_err = (v_pred.detach() - z_t).abs().cpu().numpy()
-            td_err = td_err / (td_err.max() + 1e-6)
-            self.buffer.update_priorities(indices, td_err + 1e-6)
-
-            sched.step()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 3.0)
+            opt.step();
+            sched.step();
             self._global_step += 1
 
-            # Logging
-            log = {
-                "step": self._global_step,
-                "epoch": epoch,
-                "loss": loss.item(),
-                "loss_pol": loss_pol.item(),
-                "loss_val": loss_val.item(),
-                "lr": sched.get_last_lr()[0],
-            }
+            # ───── PRIORITIES update ─────
+            prio = td.detach().abs().cpu().numpy()
+            self.buffer.update_priorities(idx, prio + 1e-6)
+
+            # ───── LOGGING ─────
             if log_cb:
-                log_cb(log)
+                log_cb({"step": self._global_step,
+                        "epoch": ep,
+                        "loss": loss.item(),
+                        "pol": loss_pol.item(),
+                        "val": loss_val.item(),
+                        "lr": sched.get_last_lr()[0],
+                        "β": round(self.buffer.beta, 3)})
 
-            if self._mlflow_ctx:
-                mlflow.log_metrics({
-                    "loss": loss.item(),
-                    "loss_pol": loss_pol.item(),
-                    "loss_val": loss_val.item(),
-                    "lr": log["lr"],
-                }, step=self._global_step)
-
-            # Checkpointing and periodic evaluation
-            if (epoch + 1) % max(1, epochs // 5) == 0:
-                success_rate = self._quick_eval()
+            if (ep + 1) % max(1, epochs // 5) == 0:
+                sr = self._quick_eval()
                 if self._mlflow_ctx:
-                    mlflow.log_metric("success_rate", success_rate, step=self._global_step)
-                self._save_ckpt(f"epoch_{epoch + 1:02d}")
+                    mlflow.log_metric("success_rate", sr, step=self._global_step)
+                self._save_ckpt(f"ep_{ep + 1:02d}")
 
         if self._mlflow_ctx:
-            mlflow.log_metric("train_time_sec", time.time() - start)
+            mlflow.log_metric("train_time", time.time() - t0, step=self._global_step)
             mlflow.end_run()
 
             # ------------------------------------------------------------------ #
@@ -1382,7 +1416,7 @@ class PegSolitaireActionSpace:
 # -------- הגדרות כלליות -------- #
 AGENT_PATH = Path("peg_agent.pt")
 HISTORY_PATH = Path("episode_history.pkl")
-TRAIN_EPISODES = 5
+TRAIN_EPISODES = 800
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"🔧 Using device: {DEVICE}")
 
@@ -1410,40 +1444,58 @@ def load_agent(path: Path = AGENT_PATH) -> Agent:
     model.eval()
 
     print("📦 Agent loaded successfully.")
-    return Agent(env, model, asp, ReplayBuffer(), sims=ckpt.get("sims", 33), device=DEVICE, keep_history=True)
+    return Agent(env, model, asp, ReplayBuffer(), sims=ckpt.get("sims", 64), device=DEVICE, keep_history=True)
 
 
 # -------- אימון / הרצה -------- #
-def train_new_agent(episodes: int = TRAIN_EPISODES) -> Agent:
-    env = PegSolitaireEnv(Board, Game)
-    asp = PegSolitaireActionSpace(env.board_mask)
+# ---------- אימון / הרצה (גרסה ממוקצת) ---------- #
+def train_new_agent(
+    episodes: int = TRAIN_EPISODES,
+    warmup_eps: int = 50,          # אפיזודות “חימום” ללא PER-IS
+    min_buf:   int = 1_024,         # מתי מתחילים back-prop
+    batch:     int = 256,
+    lr:        float = 1e-3,
+) -> Agent:
+
+    # --- Init env, net, agent ------------------------------------------------
+    env   = PegSolitaireEnv(Board, Game)
+    asp   = PegSolitaireActionSpace(env.board_mask)
     model = PegSolitaireNet(len(asp), device=DEVICE)
-    buffer = ReplayBuffer()
-    agent = Agent(env, model, asp, buffer, sims=33, device=DEVICE, keep_history=True)
+    buff  = ReplayBuffer()
+    agent = Agent(env, model, asp, buff,
+                  sims=64, device=DEVICE, keep_history=True)
 
-    print("🚀 Starting training loop ...")
+    print("🚀  starting training loop")
+    bar_fmt = "  ↳ ep {ep:4d}/{tot} | buf={buf:5d} | solved={solv}/{eps} | μ-moves={mu:.1f}"
+
+    # --- main loop -----------------------------------------------------------
     for ep in range(1, episodes + 1):
-        print(ep)
-        agent.self_play_episode()
 
-        if len(buffer) >= 256:
-            agent.train(batch=256, epochs=1, lr=1e-3)
+        agent.self_play_episode(augment=True)       # ← מייצר (s,π,G_t)
 
-        if ep % 1 == 0:
-            s = agent.stats
-            print(f"  ↳ ep {ep:4d}/{episodes} | "
-                  f"buffer={len(buffer):5d} | "
-                  f"success={s['success']}/{s['episodes']} | "
-                  f"avg_moves={s['avg_moves']:.1f}")
+        # ----------- אימון ---------------------------------------------------
+        # “חימום”: 200 אפיזודות ראשונות -> train mini-batch אחד בלי PER-IS
+        if len(buff) >= min_buf and (ep >= warmup_eps or len(buff) >= 8_192):
+            agent.train(batch=batch, epochs=3 if ep < warmup_eps else 1, lr=lr)
 
+        # -----------  הדפסות -------------------------------------------------
+        s = agent.stats
+        if ep % 10 == 0 or ep == 1:
+            print(bar_fmt.format(
+                ep=ep, tot=episodes,
+                buf=len(buff),
+                solv=s["success"], eps=s["episodes"],
+                mu=s["avg_moves"]
+            ))
+
+    # -- save -----------------------------------------------------------------
     save_agent(agent)
     if agent.keep_history:
         with open(HISTORY_PATH, "wb") as f:
             pickle.dump(agent.episodes, f)
-        print(f"🧾 Episode history saved to: {HISTORY_PATH.resolve()}")
+        print(f"🧾 episode history saved → {HISTORY_PATH.resolve()}")
 
     return agent
-
 
 
 PLOTS_DIR = Path("plots")
@@ -1638,10 +1690,10 @@ class PegSolitaireGUI(tk.Frame):
         for d, (drow, dcol) in enumerate(Game.DIRECTIONS):
             # אם Game.DIRECTIONS = (±1,0/0,±1) → קפיצה היא 2*δ
             if (dr, dc) == (2 * drow, 2 * dcol):
-                return (src[0], src[1], d)
+                return src[0], src[1], d
             # אם Game.DIRECTIONS = (±2,0/0,±2) → קפיצה שווה בדיוק ל־δ
             if (dr, dc) == (drow, dcol):
-                return (src[0], src[1], d)
+                return src[0], src[1], d
 
         raise ValueError(f"Cannot map move {move} to action – check DIRECTIONS.")
 
