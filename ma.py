@@ -342,43 +342,33 @@ class Game:
     # Game class
 
     def _default_reward(
-        self,
-        done: bool,
-        potential_before: float,
-        potential_after: float
+            self,
+            done: bool,
+            potential_before: float,
+            potential_after: float
     ) -> float:
         """
-        PBRS מלאה + "step-floor"  +  קנס סופי מותאם לגודל השארית (פגים שנותרו).
-
-        • delta_phi      – אות צפוף להתקדמות (γ·Φ' − Φ).
-        • step_floor     – קנס קטן על צעד שלא משפר (ΔΦ ≤ 0).
-        • bonus_win      – בונוס חד-פעמי על פתרון (פיון אחד במרכז).
-        • penalty_stuck  – **קנס יחסי**: ככל שנותרו יותר פגים, כך הקנס גדול יותר.
+        PBRS מלא: ΔΦ בכל צעד + בונוס/קנס סופי חד-פעמי.
         """
-        # ---------- היפר-פרמטרים ----------
-        gamma       = 0.995          # חייב להשתקף גם ב-TD-target
-        step_floor  = -0.003         # קנס מינימלי על “דריכה במקום”
-        bonus_win   = +10.0          # בונוס על ניצחון
-        k_pen       = 0.15           # מקדם קנס לפג שנותר (0.15 ≈ -5 כש-32 פגים)
-        pen_cap     = -5.0           # קנס מרבי (ביטוח)
-        # -----------------------------------
+        # ייתכן שתרצה להתאים את הגאמא בהתאם לבעיה ולרשת.
+        # ערך נמוך יותר יכול לעודד פתרונות מהירים יותר.
+        # ערך גבוה יותר יכול לעודד למידה לטווח ארוך.
+        gamma = 0.995  # נסה ערך מעט גבוה יותר כדי לתת יותר משקל לעתיד
 
-        # Δ-potential (שכפול PBRS הקלאסי)
-        delta_phi   = gamma * potential_after - potential_before
-        step_penalty = step_floor if delta_phi <= 0.0 else 0.0
-        reward       = delta_phi + step_penalty
+        # בונוסים/קנסות סופיים. ייתכן שצריך להגדיל/להקטין אותם.
+        # אם הסוכן לא מצליח לפתור, הגדל את term_win או הקטן את term_loss.
+        # אם הסוכן מוצא קיצורי דרך לא רצויים, הקטן את term_win או הגדל את term_loss.
+        term_win = 10.0  # בונוס משמעותי על ניצחון
+        term_loss = -5.0  # קנס משמעותי על הפסד
 
-        # -------------------- בונוס/קנס סופי --------------------
-        if done:
-            if self.is_win():                    # פיון 1 במרכז
-                reward += bonus_win
-            else:                                # Game-Over ללא פתרון
-                pegs_left = self.board.count_pegs()
-                # קנס סופי פרופורציונלי (עד pen_cap-)
-                penalty_stuck = -min(abs(pen_cap), k_pen * pegs_left)
-                reward += penalty_stuck
+        # Δ-potential עבור כל צעד
+        shaped = gamma * potential_after - potential_before
 
-        return float(reward)
+        if not done:
+            return shaped
+
+        # פרס סופי – מתווסף ל-ΔΦ של הצעד האחרון בלבד
+        return shaped + (term_win if self.is_win() else term_loss)
 
     def __str__(self) -> str:
         parts = [str(self.board)]
@@ -401,25 +391,27 @@ import numpy as np
 from typing import Callable, List, Optional, Tuple, Union
 
 CENTRALITY_WEIGHTS = np.array(
-    [[0.0, 0.0, 0.1, 0.1, 0.1, 0.0, 0.0],
-     [0.0, 0.1, 0.2, 0.3, 0.2, 0.1, 0.0],
-     [0.1, 0.2, 0.4, 0.5, 0.4, 0.2, 0.1],
-     [0.1, 0.3, 0.5, 1.0, 0.5, 0.3, 0.1],
-     [0.1, 0.2, 0.4, 0.5, 0.4, 0.2, 0.1],
-     [0.0, 0.1, 0.2, 0.3, 0.2, 0.1, 0.0],
-     [0.0, 0.0, 0.1, 0.1, 0.1, 0.0, 0.0]], dtype=np.float32)
+	[[0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0],
+	 [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
+	 [0.10, 0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
+	 [0.10, 0.30, 0.50, 1.00, 0.50, 0.30, 0.10],
+	 [0.10, 0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
+	 [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
+	 [0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0]], dtype=np.float32)
 
 PAGODA_VALUES = np.array(
-    [[0, 0, 1, 2, 1, 0, 0],
-     [0, 1, 2, 3, 2, 1, 0],
-     [1, 2, 3, 4, 3, 2, 1],
-     [2, 3, 4, 5, 4, 3, 2],
-     [1, 2, 3, 4, 3, 2, 1],
-     [0, 1, 2, 3, 2, 1, 0],
-     [0, 0, 1, 2, 1, 0, 0]], dtype=np.float32)
+	[[0, 0, 1, 2, 1, 0, 0],
+	 [0, 1, 2, 3, 2, 1, 0],
+	 [1, 2, 3, 4, 3, 2, 1],
+	 [2, 3, 4, 5, 4, 3, 2],
+	 [1, 2, 3, 4, 3, 2, 1],
+	 [0, 1, 2, 3, 2, 1, 0],
+	 [0, 0, 1, 2, 1, 0, 0]], dtype=np.float32)
 
-CORNER_POSITIONS: list[Tuple[int, int]] = [(0, 3), (3, 0), (3, 6), (6, 3)]
 DIRS_JUMP = np.array([[-2, 0], [2, 0], [0, -2], [0, 2]], dtype=np.int8)
+CORNER_POSITIONS = [(0, 3), (3, 0), (3, 6), (6, 3)]
+EDGE_MASK = ((CENTRALITY_WEIGHTS < 0.25) & (CENTRALITY_WEIGHTS > 0)).astype(np.float32)
+
 
 # ------------------------------------------------------------------
 #  PegSolitaireEnv  (הגרסה המקורית שלך + פוטנציאל מובנה)
@@ -456,59 +448,63 @@ class PegSolitaireEnv:
     # --------------------------------------------------------------
     #  Φ(s)  –  פוטנציאל מרובד (תיקון bounds-safe ל-isolation)
     # --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    #  GLOBAL STRATEGIC MAPS  (7×7 English board) – tuned for accuracy
+    # ------------------------------------------------------------------
+    import numpy as np
+
+    # ==============================================================
+    #   Φ(s)  – High-accuracy layered potential
+    # ==============================================================
     def _calculate_potential(self, board) -> float:
-	    # ==============================================================
-	    #   Φ(s)  – High-accuracy layered potential
-	    # ==============================================================
-	    def _calculate_potential(self, board) -> float:
-		    arr = board.as_array().astype(np.float32)  # 1 / 0
-		    mask = self.board_mask
-		    peg_cnt = int(arr.sum())
+        arr  = board.as_array().astype(np.float32)          # 1 / 0
+        mask = self.board_mask
+        peg_cnt = int(arr.sum())
 
-		    # --- φ0 : peg count (fewer ≈ better) -----------------------
-		    phi_num = -peg_cnt  # linear
+        # --- φ0 : peg count (fewer ≈ better) -----------------------
+        phi_num = -peg_cnt                                    # linear
 
-		    # --- φ1 : centrality (average per peg) --------------------
-		    phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / max(1, peg_cnt)
+        # --- φ1 : centrality (average per peg) --------------------
+        phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / max(1, peg_cnt)
 
-		    # --- φ2 : pagoda resource ---------------------------------
-		    phi_pagoda = (arr * PAGODA_VALUES * mask).sum()
+        # --- φ2 : pagoda resource ---------------------------------
+        phi_pagoda = (arr * PAGODA_VALUES * mask).sum()
 
-		    # --- φ3 : penalties – isolated / edge / corner ------------
-		    if peg_cnt == 0:
-			    phi_iso_edge = 0.0
-		    else:
-			    rc = np.argwhere(arr == 1)  # N×2
-			    reachable = np.zeros(len(rc), dtype=bool)
+        # --- φ3 : penalties – isolated / edge / corner ------------
+        if peg_cnt == 0:
+            phi_iso_edge = 0.0
+        else:
+            rc = np.argwhere(arr == 1)                         # N×2
+            reachable = np.zeros(len(rc), dtype=bool)
 
-			    for dr, dc in DIRS_JUMP:
-				    mid = rc + (dr // 2, dc // 2)
-				    dst = rc + (dr, dc)
+            for dr, dc in DIRS_JUMP:
+                mid = rc + (dr//2, dc//2)
+                dst = rc + (dr, dc)
 
-				    valid = (
-						    (dst[:, 0] >= 0) & (dst[:, 0] < 7) &
-						    (dst[:, 1] >= 0) & (dst[:, 1] < 7)
-				    )
-				    if not valid.any():
-					    continue
-				    idx = np.where(valid)[0]
+                valid = (
+                    (dst[:,0] >= 0) & (dst[:,0] < 7) &
+                    (dst[:,1] >= 0) & (dst[:,1] < 7)
+                )
+                if not valid.any():
+                    continue
+                idx = np.where(valid)[0]
 
-				    dst_ok = mask[dst[idx, 0], dst[idx, 1]] == 1
-				    mid_ok = mask[mid[idx, 0], mid[idx, 1]] == 1
-				    has_peg = arr[mid[idx, 0], mid[idx, 1]] == 1
-				    empty_dst = arr[dst[idx, 0], dst[idx, 1]] == 0  # ← החלק הקריטי
+                dst_ok    = mask[dst[idx,0], dst[idx,1]] == 1
+                mid_ok    = mask[mid[idx,0], mid[idx,1]] == 1
+                has_peg   = arr[mid[idx,0], mid[idx,1]] == 1
+                empty_dst = arr[dst[idx,0], dst[idx,1]] == 0    # ← החלק הקריטי
 
-				    reachable[idx] |= (dst_ok & mid_ok & has_peg & empty_dst)
+                reachable[idx] |= (dst_ok & mid_ok & has_peg & empty_dst)
 
-			    isolated = int((~reachable).sum())
-			    corners = int(sum(arr[r, c] for r, c in CORNER_POSITIONS))
-			    edges = int((arr * EDGE_MASK).sum())
+            isolated = int((~reachable).sum())
+            corners  = int(sum(arr[r,c] for r,c in CORNER_POSITIONS))
+            edges    = int((arr * EDGE_MASK).sum())
 
-			    phi_iso_edge = -(5.0 * isolated + 2.0 * corners + 1.0 * edges)
+            phi_iso_edge = -(5.0*isolated + 2.0*corners + 1.0*edges)
 
-		    # --- weighted sum (hyper-params tuned for accuracy) -------
-		    w0, w1, w2, w3 = 1.2, 0.65, 1.0, 0.85
-		    return w0 * phi_num + w1 * phi_centr + w2 * phi_pagoda + w3 * phi_iso_edge
+        # --- weighted sum (hyper-params tuned for accuracy) -------
+        w0, w1, w2, w3 = 1.2, 0.65, 1.0, 0.85
+        return w0*phi_num + w1*phi_centr + w2*phi_pagoda + w3*phi_iso_edge
 
     # ------------------------------------------------------------------
     # כל שאר השיטות שלך נשארו ללא שינוי – העתקנו ככתבן וכלשונן
@@ -1252,15 +1248,19 @@ class Agent:
         )
 
         start = time.time()
-        # ───────── סימולציות MCTS דינמיות ─────────
         if not hasattr(self, "_sims0"):
-            self._sims0 = self.mcts.sims
-        grow, cap = 1.18, 384
+            self._sims0 = self.mcts.sims  # 33 כברירת-מחדל
 
-        t0 = time.time()
-        for ep in range(epochs):
+        growth = 1.18  # 18 % בכל Epoch
+        cap = 384  # תקרה קשיחה
+        # -----------------------------------------------------------------
 
-            self.mcts.sims = min(int(self._sims0 * (grow ** ep)), cap)
+        for epoch in range(epochs):
+            # --- הגדלת מספר הסימולציות ---
+            self.mcts.sims = min(
+                int(self._sims0 * (growth ** epoch)),
+                cap
+            )
 
             # ==== דגימה עם אינדקסים וחשבון IS weights ====
             obs_t, pi_t, z_t, indices = self.buffer.sample_as_tensors(batch, device=self.device)
