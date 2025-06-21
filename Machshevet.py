@@ -1176,7 +1176,7 @@ class Agent:
             # מסיכת פעולות חוקיות
             legal = self.env.get_legal_actions()
             legal_idx = [self.action_space.to_index(a) for a in legal]
-            π_mask = π[legal_idx];
+            π_mask = π[legal_idx]
             π_mask /= π_mask.sum() + 1e-8
             act_idx = int(np.random.choice(legal_idx, p=π_mask))
             action = self.action_space.from_index(act_idx)
@@ -1323,8 +1323,8 @@ class Agent:
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 3.0)
-            opt.step();
-            sched.step();
+            opt.step()
+            sched.step()
             self._global_step += 1
 
             # ───── PRIORITIES update ─────
@@ -1416,7 +1416,7 @@ class PegSolitaireActionSpace:
 # -------- הגדרות כלליות -------- #
 AGENT_PATH = Path("peg_agent.pt")
 HISTORY_PATH = Path("episode_history.pkl")
-TRAIN_EPISODES = 800
+TRAIN_EPISODES = 10
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"🔧 Using device: {DEVICE}")
 
@@ -1560,7 +1560,7 @@ class PegSolitaireGUI(tk.Frame):
         self.bar.pack(side="right", padx=6)
 
         # ——— כפתורים ———
-        btns = tk.Frame(self, bg=self.BG);
+        btns = tk.Frame(self, bg=self.BG)
         btns.pack()
         for txt, cmd in [("\u21a9 Undo", self.on_undo),
                          ("\u21aa Redo", self.on_redo),
@@ -1611,7 +1611,7 @@ class PegSolitaireGUI(tk.Frame):
         # רמז
         if self.hint:
             src, dst = self.hint
-            x1, y1 = self._xy(src);
+            x1, y1 = self._xy(src)
             x2, y2 = self._xy(dst)
             self.canvas.create_line(x1, y1, x2, y2,
                                     fill=self.SUGGEST, width=5, arrow=tk.LAST)
