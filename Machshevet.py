@@ -1,7 +1,11 @@
 from __future__ import annotations
 from typing import Dict, Tuple, List, Union
 import numpy as np
+from matplotlib import pyplot as plt
 from torch import autograd, autocast, GradScaler
+import pickle
+import tkinter as tk
+from pathlib import Path
 
 Pos = Tuple[int, int]
 
@@ -138,13 +142,7 @@ class ValueNetwork(nn.Module):
         x = F.relu(self.fc1(x))
         return self.fc2(x).squeeze(-1)  # -> [B]
 
-def make_potential_fn(model: ValueNetwork, device='cpu'):
-    def potential(board: "Board") -> float:
-        obs = board.encode_observation()  # [7,7,4]
-        x = torch.tensor(obs, dtype=torch.float32, device=device).permute(2, 0, 1).unsqueeze(0)  # -> [1,4,7,7]
-        with torch.no_grad():
-            return model(x).item()
-    return potential
+
 from typing import Callable, List, Tuple, Optional, Dict, Union
 
 Pos    = Tuple[int, int]
@@ -174,7 +172,7 @@ class Game:
         self.move_log    : List[Tuple[Pos, Pos, Pos]] = []
 
         self.potential_fn = potential_fn or (lambda b: -b.count_pegs())
-        self.reward_fn = reward_fn or self._default_reward
+        self.reward_fn = self._default_reward
         self.custom_metadata: Dict[str, object] = {}
 
     @staticmethod
@@ -342,6 +340,7 @@ class Game:
         self.custom_metadata[k] = v
 
     # Game class
+
     def _default_reward(
             self,
             done: bool,
@@ -349,23 +348,27 @@ class Game:
             potential_after: float
     ) -> float:
         """
-        Calculates the reward using Potential-Based Reward Shaping (PBRS).
+        PBRS מלא: ΔΦ בכל צעד + בונוס/קנס סופי חד-פעמי.
         """
-        # ------------------ פרמטרים ------------------
-        gamma = 0.99  # פקטור היוון, צריך להיות זהה לזה של המטרה (z)
-        win_reward = 1.0  # תגמול על ניצחון
-        loss_penalty = -1.0  # קנס על הפסד (סיום משחק ללא פתרון)
-        step_penalty = -0.01  # קנס קטן על כל צעד למניעת משחקים אינסופיים (אופציונלי)
-        # -------------------------------------------
+        # ייתכן שתרצה להתאים את הגאמא בהתאם לבעיה ולרשת.
+        # ערך נמוך יותר יכול לעודד פתרונות מהירים יותר.
+        # ערך גבוה יותר יכול לעודד למידה לטווח ארוך.
+        gamma = 0.995  # נסה ערך מעט גבוה יותר כדי לתת יותר משקל לעתיד
 
-        if done:
-            return win_reward if self.is_win() else loss_penalty
+        # בונוסים/קנסות סופיים. ייתכן שצריך להגדיל/להקטין אותם.
+        # אם הסוכן לא מצליח לפתור, הגדל את term_win או הקטן את term_loss.
+        # אם הסוכן מוצא קיצורי דרך לא רצויים, הקטן את term_win או הגדל את term_loss.
+        term_win = 10.0  # בונוס משמעותי על ניצחון
+        term_loss = -5.0  # קנס משמעותי על הפסד
 
-        # נוסחת PBRS: R = F(s, a, s') = r(s,a) + gamma * Φ(s') - Φ(s)
-        # כאן, r(s,a) הוא תגמול הצעד המיידי (step_penalty)
-        reward_shaping = gamma * potential_after - potential_before
-        return step_penalty + reward_shaping
+        # Δ-potential עבור כל צעד
+        shaped = gamma * potential_after - potential_before
 
+        if not done:
+            return shaped
+
+        # פרס סופי – מתווסף ל-ΔΦ של הצעד האחרון בלבד
+        return shaped + (term_win if self.is_win() else term_loss)
 
     def __str__(self) -> str:
         parts = [str(self.board)]
@@ -381,22 +384,46 @@ Pos    = Tuple[int, int]
 Action = Tuple[int, int, int]
 
 
+# ------------------------------------------------------------------
+# 🗺️  STRATEGIC MAPS  (7×7 English board – ערכים ניתנים לכיול)
+# ------------------------------------------------------------------
+import numpy as np
+from typing import Callable, List, Optional, Tuple, Union
+
+CENTRALITY_WEIGHTS = np.array(
+    [[0.0, 0.0, 0.1, 0.1, 0.1, 0.0, 0.0],
+     [0.0, 0.1, 0.2, 0.3, 0.2, 0.1, 0.0],
+     [0.1, 0.2, 0.4, 0.5, 0.4, 0.2, 0.1],
+     [0.1, 0.3, 0.5, 1.0, 0.5, 0.3, 0.1],
+     [0.1, 0.2, 0.4, 0.5, 0.4, 0.2, 0.1],
+     [0.0, 0.1, 0.2, 0.3, 0.2, 0.1, 0.0],
+     [0.0, 0.0, 0.1, 0.1, 0.1, 0.0, 0.0]], dtype=np.float32)
+
+PAGODA_VALUES = np.array(
+    [[0, 0, 1, 2, 1, 0, 0],
+     [0, 1, 2, 3, 2, 1, 0],
+     [1, 2, 3, 4, 3, 2, 1],
+     [2, 3, 4, 5, 4, 3, 2],
+     [1, 2, 3, 4, 3, 2, 1],
+     [0, 1, 2, 3, 2, 1, 0],
+     [0, 0, 1, 2, 1, 0, 0]], dtype=np.float32)
+
+CORNER_POSITIONS: list[Tuple[int, int]] = [(0, 3), (3, 0), (3, 6), (6, 3)]
+DIRS_JUMP = np.array([[-2, 0], [2, 0], [0, -2], [0, 2]], dtype=np.int8)
+
+# ------------------------------------------------------------------
+#  PegSolitaireEnv  (הגרסה המקורית שלך + פוטנציאל מובנה)
+# ------------------------------------------------------------------
 class PegSolitaireEnv:
     """
     Gym-lite environment for Peg-Solitaire (7×7 cross).
-
-    Observation : ndarray (7, 7, 4) —
-        ch0 = peg / hole,
-        ch1 = fraction removed,
-        ch2 = fraction remaining,
-        ch3 = legal-mask.
-
-    Action      : (row, col, dir-idx)  where dir-idx∈{0:↑, 1:↓, 2:←, 3:→}
+    Observation : ndarray (7,7,4);  Action : (row,col,dir-idx)
     """
 
     BOARD_SIZE = 7
     TOTAL_PEGS = 32
 
+    # -------- ctor -------- #
     def __init__(
         self,
         board_cls,
@@ -406,12 +433,73 @@ class PegSolitaireEnv:
     ) -> None:
         self._board_cls = board_cls
         self._game_cls  = game_cls
-        self.board_mask = board_cls.LEGAL_MASK.copy()
+        self.board_mask = board_cls.LEGAL_MASK.astype(np.float32).copy()
+
+        # אם לא סופקה Φ(s) חיצונית – השתמש בזו המובנית
+        potential_fn = self._calculate_potential
 
         self.game = game_cls(board_cls(), reward_fn=reward_fn, potential_fn=potential_fn)
         self._potential_fn = potential_fn
         self.done = False
 
+    # -------- פוטנציאל מובנה -------- #
+    # --------------------------------------------------------------
+    #  Φ(s)  –  פוטנציאל מרובד (תיקון bounds-safe ל-isolation)
+    # --------------------------------------------------------------
+    def _calculate_potential(self, board) -> float:
+        arr = board.as_array().astype(np.float32)
+        mask = self.board_mask
+        pegs = int(arr.sum())
+
+        phi_num_pegs = -pegs
+
+        phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / max(1.0, pegs)
+        phi_pagoda = (arr * PAGODA_VALUES * mask).sum()
+
+        if pegs == 0:
+            phi_iso = 0.0
+        else:
+            pegs_rc = np.argwhere(arr == 1)  # [[r,c], ...]
+            reachable = np.zeros(len(pegs_rc), dtype=bool)
+
+            for dr, dc in DIRS_JUMP:  # 4 כיוונים
+                mid = pegs_rc + (dr // 2, dc // 2)
+                dst = pegs_rc + (dr, dc)
+
+                in_bounds = (
+                        (dst[:, 0] >= 0) & (dst[:, 0] < 7) &
+                        (dst[:, 1] >= 0) & (dst[:, 1] < 7) &
+                        (mid[:, 0] >= 0) & (mid[:, 0] < 7) &
+                        (mid[:, 1] >= 0) & (mid[:, 1] < 7)
+                )
+
+                if not in_bounds.any():
+                    continue
+
+                idx = np.where(in_bounds)[0]  # רק בתוך-גבול
+
+                # --- התיקון מתבצע כאן ---
+                # השורות השגויות הוסרו. השורה הבאה כבר הייתה נכונה.
+                dst_ok = mask[dst[idx, 0], dst[idx, 1]] == 1
+                mid_ok = mask[mid[idx, 0], mid[idx, 1]] == 1
+                has_peg = arr[mid[idx, 0], mid[idx, 1]] == 1
+                empty_dst = arr[dst[idx, 0], dst[idx, 1]] == 0  # זו השורה המקורית הנכונה
+
+                reachable[idx] |= (dst_ok & mid_ok & has_peg & empty_dst)
+
+            isolated = (~reachable).sum()
+            corner_pegs = sum(arr[r, c] for r, c in CORNER_POSITIONS)
+            phi_iso = -(5.0 * isolated + 2.0 * corner_pegs)
+
+            edge_pegs = (arr * (1 - CENTRALITY_WEIGHTS) * mask).sum()
+            phi_iso -= 0.5 * edge_pegs
+
+        w0, w1, w2, w3 = 2.0, 0.5, 1.0, 0.8
+        return w0 * phi_num_pegs + w1 * phi_centr + w2 * phi_pagoda + w3 * phi_iso
+
+    # ------------------------------------------------------------------
+    # כל שאר השיטות שלך נשארו ללא שינוי – העתקנו ככתבן וכלשונן
+    # ------------------------------------------------------------------
     def reset(self, state: Optional[Union[dict, "Board"]] = None) -> Tuple[np.ndarray, dict]:
         if state is None:
             self.game.reset()
@@ -420,7 +508,7 @@ class PegSolitaireEnv:
         self.done = False
         return self.encode_observation(), {"num_pegs": self.game.board.count_pegs()}
 
-    def step(self, action: Action) -> Tuple[np.ndarray, float, bool, dict]:
+    def step(self, action: Tuple[int, int, int]) -> Tuple[np.ndarray, float, bool, dict]:
         if self.done:
             raise RuntimeError("step() called after episode finished — call reset().")
 
@@ -437,28 +525,26 @@ class PegSolitaireEnv:
         }
         return obs, reward, self.done, info
 
-    def get_legal_actions(self) -> List[Action]:
+    def get_legal_actions(self) -> List:
         return self.game.get_legal_actions()
 
-    def get_legal_action_mask(self, action_space_size: int, to_idx: Callable[[Action], int]) -> np.ndarray:
+    def get_legal_action_mask(self, action_space_size: int, to_idx: Callable) -> np.ndarray:
         mask = np.zeros(action_space_size, dtype=np.float32)
         for a in self.get_legal_actions():
             mask[to_idx(a)] = 1.0
         return mask
 
     def encode_observation(self) -> np.ndarray:
-        arr = self.game.board.as_array()
-        num_pegs = self.game.board.count_pegs()
-        removed, remain = (
-            (self.TOTAL_PEGS - num_pegs) / self.TOTAL_PEGS,
-            num_pegs / self.TOTAL_PEGS,
-        )
+        arr     = self.game.board.as_array().astype(np.float32)
+        peg_cnt = arr.sum()
+        removed = (self.TOTAL_PEGS - peg_cnt) / self.TOTAL_PEGS
+        remain  = peg_cnt / self.TOTAL_PEGS
 
         obs = np.zeros((self.BOARD_SIZE, self.BOARD_SIZE, 4), dtype=np.float32)
-        obs[:, :, 0] = arr
-        obs[:, :, 1] = removed
-        obs[:, :, 2] = remain
-        obs[:, :, 3] = self.board_mask
+        obs[..., 0] = arr
+        obs[..., 1] = removed
+        obs[..., 2] = remain
+        obs[..., 3] = self.board_mask
         return obs
 
     def clone_state(self, state=None) -> "PegSolitaireEnv":
@@ -472,12 +558,12 @@ class PegSolitaireEnv:
         return clone
 
     @staticmethod
-    def augment_observation(obs: np.ndarray, mode: str = "random") -> List[np.ndarray] | np.ndarray:
+    def augment_observation(obs: np.ndarray, mode: str = "random"):
         augs: List[np.ndarray] = []
         for rot in range(4):
-            r = np.rot90(obs, k=rot, axes=(0, 1))
+            rot_img = np.rot90(obs, k=rot, axes=(0, 1))
             for flip in (False, True):
-                augs.append(np.flip(r, axis=1) if flip else r)
+                augs.append(np.flip(rot_img, axis=1) if flip else rot_img)
         if mode == "all":
             return augs
         if mode == "random":
@@ -485,7 +571,7 @@ class PegSolitaireEnv:
         return obs
 
     @staticmethod
-    def augment_action(action: Action, rot: int = 0, flip: bool = False) -> Action:
+    def augment_action(action, rot: int = 0, flip: bool = False):
         row, col, d = action
         dirs = [(-2, 0), (2, 0), (0, -2), (0, 2)]
         dr, dc = dirs[d]
@@ -493,48 +579,21 @@ class PegSolitaireEnv:
 
         for _ in range(rot):
             row, col = col, 6 - row
-            tgt      = (tgt[1], 6 - tgt[0])
+            tgt = (tgt[1], 6 - tgt[0])
 
         if flip:
-            row, col = row, 6 - col
-            tgt      = (tgt[0], 6 - tgt[1])
+            col, tgt = 6 - col, (tgt[0], 6 - tgt[1])
 
-        diff  = (tgt[0] - row, tgt[1] - col)
-        d_new = dirs.index(diff)
-        return row, col, d_new
+        diff = (tgt[0] - row, tgt[1] - col)
+        return row, col, dirs.index(diff)
 
-    def render(self, mode: str = "human") -> None:
+    def render(self, mode="human"):
         print(self.game.board)
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 from typing import Tuple
 
 
-class ResidualBlock(nn.Module):
-    """Conv-BN-ReLU ×2 + skip connection."""
-    def __init__(self, channels: int) -> None:
-        super().__init__()
-        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
-        self.bn1   = nn.BatchNorm2d(channels)
-        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm2d(channels)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = F.relu(self.bn1(self.conv1(x)))
-        y = self.bn2(self.conv2(y))
-        return F.relu(x + y)
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple
 
 # Assuming ResidualBlock is defined elsewhere and works correctly
 class ResidualBlock(nn.Module):
@@ -555,42 +614,42 @@ class ResidualBlock(nn.Module):
 
 class PegSolitaireNet(nn.Module):
     """
-    ResNet-10 dual-head network with Attention + Uncertainty.
+    ResNet-10 dual-head network with MHSA-based Policy + MC Dropout for Uncertainty.
     Input  : (B,4,7,7)
-    Output : π_logits (B,n_actions), v (B,)∈[-1,1]
+    Output : π_logits (B,n_actions), v (B,) ∈ [-1,1]
     """
     def __init__(
         self,
         n_actions: int,
         channels: int = 64,
-        n_res_blocks: int = 10,
+        n_res_blocks: int = 6,
         hidden_value: int = 128,
         dropout_p: float = 0.1,
         use_layernorm: bool = True,
-        device: str | torch.device = "cpu",
+        device: str | torch.device = "mps",
     ) -> None:
         super().__init__()
+        assert channels % 4 == 0, "channels must be divisible by number of attention heads (4)"
         self.device = torch.device(device)
 
         # ----- Stem -----
         self.conv_in = nn.Conv2d(4, channels, kernel_size=3, padding=1, bias=False)
-        self.bn_in   = nn.BatchNorm2d(channels)
+        self.bn_in = nn.BatchNorm2d(channels)
 
-        # ----- Residual Tower (10 blocks) -----
+        # ----- Residual Tower -----
         self.body = nn.Sequential(*[ResidualBlock(channels) for _ in range(n_res_blocks)])
 
-        # ===== Policy Head with Spatial-Attention =====
-        # 1×1 conv -> attention weights (7×7), softmax-ed
-        self.attn_conv = nn.Conv2d(channels, 1, kernel_size=1, bias=False)
-        # Fully-connected: channels → n_actions
-        self.pol_fc    = nn.Linear(channels, n_actions)
+        # ===== Policy Head with Multi-Head Self-Attention =====
+        self.attn_mhsa = nn.MultiheadAttention(embed_dim=channels, num_heads=4, batch_first=True)
+        self.policy_norm = nn.LayerNorm(channels)
+        self.pol_fc = nn.Linear(channels, n_actions)
 
         # ===== Value Head =====
         self.val_conv = nn.Conv2d(channels, 2, kernel_size=1, bias=False)
-        self.val_bn   = nn.BatchNorm2d(2)
-        self.val_fc1  = nn.Linear(2 * 7 * 7, hidden_value)
-        self.val_fc2  = nn.Linear(hidden_value, 1)
-        self.dropout  = nn.Dropout(p=dropout_p)
+        self.val_bn = nn.BatchNorm2d(2)
+        self.val_fc1 = nn.Linear(2 * 7 * 7, hidden_value)
+        self.val_fc2 = nn.Linear(hidden_value, 1)
+        self.dropout = nn.Dropout(p=dropout_p)
         self.ln_value = nn.LayerNorm(hidden_value) if use_layernorm else nn.Identity()
 
         self.to(self.device)
@@ -598,103 +657,122 @@ class PegSolitaireNet(nn.Module):
     # --------------------------------------------------------------------- #
     def _policy_head(self, features: torch.Tensor) -> torch.Tensor:
         """
-        Spatial-attention over (B,C,7,7) → logits (B,n_actions)
+        Multi-Head Self-Attention over spatial features → logits (B, n_actions)
         """
-        B, C, H, W = features.shape                       # 7×7 לגודל לוח קלאסי
-        # attention weights α_{i} ∈ ℝ^{49}, Σα=1
-        # Changed: Use torch.flatten instead of .contiguous().reshape
-        attn_logits  = torch.flatten(self.attn_conv(features), start_dim=1)  # (B,49)
-        attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(1)          # (B,1,49)
-
-        # flatten feature map → (B,C,49) ואז average pool עם α
-        # Changed: Use torch.flatten instead of .contiguous().reshape
-        f_flat   = torch.flatten(features, start_dim=2)                     # (B,C,49)
-        f_weight = (f_flat * attn_weights).sum(dim=2)                      # (B,C)
-
-        # linear → n_actions
-        return self.pol_fc(f_weight)                                        # (B,n_actions)
+        B, C, H, W = features.shape  # Expected: (B, C, 7, 7)
+        x = features.flatten(2).transpose(1, 2)           # (B, 49, C)
+        attn_out, _ = self.attn_mhsa(x, x, x)              # (B, 49, C)
+        pooled = attn_out.mean(dim=1)                      # (B, C)
+        pooled = self.policy_norm(pooled)                  # (B, C)
+        return self.pol_fc(pooled)                         # (B, n_actions)
 
     # --------------------------------------------------------------------- #
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Args : x (B,4,7,7)
-        Returns: π_logits (B,n_actions), v (B,)
+        Args    : x (B,4,7,7)
+        Returns : π_logits (B,n_actions), v (B,) ∈ [-1,1]
         """
         x = x.to(self.device)
-        x = F.relu(self.bn_in(self.conv_in(x)))
-        x = self.body(x)                                 # (B,C,7,7)
+        x = F.relu(self.bn_in(self.conv_in(x)))            # (B, C, 7, 7)
+        x = self.body(x)                                   # (B, C, 7, 7)
 
-        # ----- Policy -----
-        pi_logits = self._policy_head(x)                 # (B,n_actions)
+        # ----- Policy Head -----
+        pi_logits = self._policy_head(x)                   # (B, n_actions)
 
-        # ----- Value -----
-        v = F.relu(self.val_bn(self.val_conv(x)))        # (B,2,7,7)
-        # Changed: Use torch.flatten instead of .contiguous().flatten
-        v = torch.flatten(v, start_dim=1)                # flatten
-        v = self.dropout(F.relu(self.val_fc1(v)))        # MC-Dropout ≈ uncertainty
+        # ----- Value Head -----
+        v = F.relu(self.val_bn(self.val_conv(x)))          # (B, 2, 7, 7)
+        v = v.reshape(v.shape[0], -1)                      # (B, 98)
+        v = self.dropout(F.relu(self.val_fc1(v)))          # (B, hidden)
         v = self.ln_value(v)
-        v = torch.tanh(self.val_fc2(v)).squeeze(-1)      # (B,)
+        v = torch.tanh(self.val_fc2(v)).squeeze(-1)        # (B,)
 
         return pi_logits, v
 
 from collections import deque
-import random
+
+
+import heapq
+
 import numpy as np
+import random
+import torch
+from typing import List, Tuple
+
+import numpy as np
+import torch
+import heapq
+import itertools
+import random
 from typing import List, Tuple, Optional
 
+import numpy as np
+import random
+import torch
+import heapq
+import itertools
+from typing import List, Tuple, Optional
 
 class ReplayBuffer:
     """
-    FIFO Replay Buffer לאחסון דגימות Self-Play בפורמט:
-        (observation, policy π, value z)
-    כאשר:
-        - observation : np.ndarray בגודל (7,7,4)
-        - π           : np.ndarray של הסתברויות על פעולות
-        - z           : float (ערך המשחק: ניצחון/הפסד)
-
-    תמיכה ב־O(1) הוספה, דגימה אקראית.
+    Prioritized Experience Replay Buffer (PER) with priority-based forgetting.
+    Efficient heapq-based implementation. Compatible API.
+    Stores (observation, policy π, value z).
     """
-    def __init__(self, max_size: int = 50_000) -> None:
+    def __init__(self, max_size: int = 50_000, alpha: float = 0.6):
         self.max_size = max_size
-        self.buf: deque[Tuple[np.ndarray, np.ndarray, float]] = deque(maxlen=max_size)
+        self.alpha = alpha
+        self.counter = itertools.count()
+        self.heap: List[Tuple[float, int, Tuple[np.ndarray, np.ndarray, float]]] = []
 
-    def push(self, sample: Tuple[np.ndarray, np.ndarray, float]) -> None:
-        """
-        הוסף דגימה לבאפר. נחתך אוטומטית אם עבר maxlen.
-        """
-        self.buf.append(sample)
+    def push(self, sample: Tuple[np.ndarray, np.ndarray, float], priority: Optional[float] = None) -> None:
+        if priority is None:
+            priority = max([abs(x[0]) for x in self.heap], default=1.0)
+        entry = (float(priority), next(self.counter), sample)
+        heapq.heappush(self.heap, entry)
+        if len(self.heap) > self.max_size:
+            heapq.heappop(self.heap)
 
     def sample(self, batch_size: int) -> List[Tuple[np.ndarray, np.ndarray, float]]:
-        """
-        דגום אצווה רנדומלית בגודל נתון (או פחות אם חסר).
-        """
-        batch_size = min(batch_size, len(self.buf))
-        return random.sample(self.buf, batch_size)
+        # Take a snapshot for consistent indices
+        heap_list = list(self.heap)
+        priorities = np.array([abs(x[0]) for x in heap_list], dtype=np.float32)
+        probs = priorities ** self.alpha
+        probs /= probs.sum() + 1e-8
+
+        idxs = np.random.choice(len(heap_list), batch_size, p=probs)
+        return [heap_list[i][2] for i in idxs]
 
     def sample_as_tensors(
         self,
         batch_size: int,
-        device: str = "cpu"
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        device: str = "mps"
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray]:
+        heap_list = list(self.heap)
+        priorities = np.array([abs(x[0]) for x in heap_list], dtype=np.float32)
+        probs = priorities ** self.alpha
+        probs /= probs.sum() + 1e-8
+
+        idxs = np.random.choice(len(heap_list), batch_size, p=probs)
+        obs = torch.tensor(np.stack([heap_list[i][2][0] for i in idxs]), dtype=torch.float32, device=device).permute(0, 3, 1, 2).contiguous()
+        pi  = torch.tensor(np.stack([heap_list[i][2][1] for i in idxs]), dtype=torch.float32, device=device).contiguous()
+        z   = torch.tensor(np.array([heap_list[i][2][2] for i in idxs]), dtype=torch.float32, device=device).contiguous()
+        return obs, pi, z, idxs
+
+    def update_priorities(self, indices: np.ndarray, new_priorities: np.ndarray) -> None:
         """
-        דגום אצווה והחזר כ־Torch Tensors.
+        Update priorities by building a new heap with updated priorities.
+        This avoids ValueError and keeps all samples fresh.
         """
-        import torch
-        samples = self.sample(batch_size)
-        obs, pi, z = zip(*samples)
-        obs = torch.tensor(np.stack(obs), dtype=torch.float32, device=device).permute(0, 3, 1, 2)  # [B,4,7,7]
-        pi  = torch.tensor(np.stack(pi), dtype=torch.float32, device=device)
-        z   = torch.tensor(np.array(z), dtype=torch.float32, device=device)
-        return obs, pi, z
+        heap_list = list(self.heap)
+        for heap_idx, new_prio in zip(indices, new_priorities):
+            old_prio, count, sample = heap_list[heap_idx]
+            heap_list[heap_idx] = (float(new_prio), count, sample)
+        # Rebuild the heap in place (this is O(N), but done rarely)
+        self.heap = heap_list
+        heapq.heapify(self.heap)
 
     def __len__(self) -> int:
-        return len(self.buf)
-
-
-import torch
-import numpy as np
-import random
-from typing import Dict, Tuple, List, Optional
+        return len(self.heap)
 
 
 # הערה: מחלקת Node נשארה ללא שינוי, לכן אין צורך להציגה שוב.
@@ -726,12 +804,12 @@ class MCTS:
             env,
             model: "PegSolitaireNet",
             action_space,
-            sims: int = 100,
+            sims: int = 400,
             c_puct: float = 1.5,
             root_noise: bool = True,
             dirichlet_alpha: float = 0.3,
             noise_ratio: float = 0.25,
-            device: str | torch.device = "cpu",
+            device: str | torch.device = "mps",
     ) -> None:
         self.env = env
         self.model = model
@@ -743,9 +821,10 @@ class MCTS:
         self.noise_ratio = noise_ratio
         self.device = torch.device(device)
 
-    def run(self, root_obs: np.ndarray, tau: float = 1.0) -> np.ndarray:
+    def run(self, root_obs: np.ndarray, tau: float = 1.0, entropy_threshold: float = 0.5) -> np.ndarray:
         """
-        מבצע MCTS מהמצב הנתון ומחזיר את מדיניות הפעולה π.
+        DS-MCTS (Dynamic Stopping MCTS) AlphaZero-style implementation.
+        Stops simulations dynamically based on entropy of visit distribution.
         """
         root = self._expand(
             obs=root_obs,
@@ -753,50 +832,58 @@ class MCTS:
             add_noise=self.root_noise,
         )
 
-        for _ in range(self.sims):
-            # לכל סימולציה משכפלים סביבה חדשה מהשורש.
+        for sim in range(self.sims):
             env_cpy = self.env.clone_state()
             node = root
             path = [root]
             done = False
 
-            # -------- 1. Selection (בחירה) -------- #
+            # -------- Selection -------- #
             while node.children and not done:
                 act_idx, node = self._select(node)
-                obs, reward, done, _ = env_cpy.step(self.action_space.from_index(act_idx))
+                _, _, done, _ = env_cpy.step(self.action_space.from_index(act_idx))
                 path.append(node)
 
-            # -------- 2. Expansion & Evaluation -------- #
+            # -------- Expansion & Evaluation -------- #
             if not done:
                 obs = env_cpy.encode_observation()
                 node.children = self._expand(obs, env_cpy.get_legal_actions()).children
                 v = self._evaluate(obs)
             else:
-                # במשחק חד-שחקן: הערך הוא פשוט התגמול של המצב הסופי.
                 v = 1.0 if env_cpy.game.is_win() else -1.0
 
-            # -------- 3. Backpropagation -------- #
-            # (אין צורך להחליף סימן – חד שחקן)
+            # -------- Backpropagation -------- #
             for n in path:
                 n.visit += 1
                 n.value_sum += v
 
-        # ------- חישוב מדיניות היעד π מביקורי הצמתים -------
-        visits = np.array([child.visit for idx, child in sorted(root.children.items())])
-        indices = np.array([idx for idx in sorted(root.children)])
+            # -------- Dynamic stopping based on entropy -------- #
+            visits = np.array([child.visit for child in root.children.values()])
+            probs = visits / visits.sum()
+            entropy = -np.sum(probs * np.log(probs + 1e-8))
 
-        if tau == 0.0:  # בחירה דטרמיניסטית
+            if entropy < entropy_threshold and sim > (self.sims * 0.3):
+                # Allow a minimum number of simulations (e.g., 30%) before dynamic stopping
+                break
+
+        # -------- Compute final policy π -------- #
+        sorted_children = sorted(root.children.items())
+        visits = np.array([child.visit for _, child in sorted_children])
+        indices = np.array([idx for idx, _ in sorted_children])
+
+        if tau == 0.0:
             pi = np.zeros_like(visits, dtype=np.float32)
-            if len(visits) > 0:
-                pi[np.argmax(visits)] = 1.0
-        else:  # דגימה הסתברותית
-            log_v = np.log(visits + 1e-8) / tau
-            pi = np.exp(log_v - np.max(log_v))
+            pi[np.argmax(visits)] = 1.0
+        else:
+            log_visits = np.log(visits + 1e-8) / tau
+            pi = np.exp(log_visits - np.max(log_visits))
             pi /= pi.sum()
 
         full_pi = np.zeros(len(self.action_space), dtype=np.float32)
         full_pi[indices] = pi
+
         return full_pi
+
 
     @torch.no_grad()
     def _evaluate(self, obs: np.ndarray) -> float:
@@ -814,7 +901,7 @@ class MCTS:
         x = torch.tensor(obs, dtype=torch.float32, device=self.device) \
             .permute(2, 0, 1).unsqueeze(0).contiguous()
         logits, _ = self.model(x)
-        probs = torch.softmax(logits, -1).cpu().detach().numpy().flatten()
+        probs = torch.softmax(logits, -1).cpu().detach().numpy().reshape(-1)
 
         mask = self.action_space.legal_action_mask(legal)
         probs *= mask
@@ -854,11 +941,8 @@ class MCTS:
 # ------------------------------------------------------------------ #
 #                               Agent                                #
 # ------------------------------------------------------------------ #
-import random
-import numpy as np
-import torch
-import torch.nn.functional as F
-from typing import List, Tuple, Dict
+
+from typing import  Tuple
 
 Pos = Tuple[int, int]
 Action = Tuple[int, int, int]
@@ -867,10 +951,7 @@ Action = Tuple[int, int, int]
 import time
 from typing import Dict, Tuple, List, Optional, Callable
 
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 
 try:
     import mlflow
@@ -920,13 +1001,10 @@ class AgentAnalyzer:
 #                              agent.py                                  #
 # ====================================================================== #
 import os, time, random, math
-from pathlib import Path
 from collections import defaultdict
 from typing import List, Dict, Tuple, Callable, Optional
 
-import numpy as np
-import torch
-import torch.nn.functional as F
+
 
 try:
     import mlflow                           # optional
@@ -988,8 +1066,8 @@ class Agent:
         model: "PegSolitaireNet",
         action_space: "PegSolitaireActionSpace",
         buffer: "ReplayBuffer",
-        sims: int = 100,
-        device: str | torch.device = "cpu",
+        sims: int = 33,
+        device: str | torch.device = "mps",
         keep_history: bool = False,
         mlflow_experiment: str | None = None,
         ckpt_dir: str = "checkpoints",
@@ -1038,55 +1116,86 @@ class Agent:
     # ------------------ self-play episode ------------------ #
     def self_play_episode(self, augment: bool = True) -> None:
         obs, _ = self.env.reset()
-        done, moves, reward = False, 0, 0.0
+        done = False
+        moves = 0
+        total_reward = 0.0
         states, policies = [], []
+
         self.analyzer.reset()
-        rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
+        episode_record = {
+            "moves": [],
+            "reward": 0.0,
+            "solved": False,
+            "moves_len": 0,
+        }
 
         while not done:
             moves += 1
             tau = 1.0 if moves < 10 else 0.05
+
+            # Compute policy using MCTS
             π = self.mcts.run(obs, tau=tau)
 
-            legal_idx = [self.action_space.to_index(a) for a in self.env.get_legal_actions()]
-            π_mask = π[legal_idx]; π_mask /= (π_mask.sum() + 1e-8)
-            act_idx = int(np.random.choice(legal_idx, p=π_mask))
-            action  = self.action_space.from_index(act_idx)
+            # Mask policy probabilities based on legal actions
+            legal_actions = self.env.get_legal_actions()
+            legal_indices = [self.action_space.to_index(a) for a in legal_actions]
+            π_masked = π[legal_indices]
+            π_masked /= np.sum(π_masked) + 1e-8
 
-            states.append(obs); policies.append(π)
+            # Choose action probabilistically based on masked policy
+            chosen_index = np.random.choice(legal_indices, p=π_masked)
+            action = self.action_space.from_index(chosen_index)
 
-            # analyzer
+            # Store state and policy for replay buffer
+            states.append(obs.copy())
+            policies.append(π.copy())
+
+            # Analyzer logging
             with torch.no_grad():
-                t = torch.tensor(obs, dtype=torch.float32, device=self.device)\
-                        .permute(2,0,1).unsqueeze(0)
-                _, v_est = self.model(t)
-            self.analyzer.log(obs, act_idx, v_est.item(), legal_idx)
+                tensor_obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
+                tensor_obs = tensor_obs.permute(2, 0, 1).unsqueeze(0).contiguous()
+                _, v_est = self.model(tensor_obs)
 
+            self.analyzer.log(obs, chosen_index, v_est.item(), legal_indices)
+
+            # Execute chosen action
             obs, reward, done, _ = self.env.step(action)
-            rec["moves"].append(action)
+            total_reward = reward
+            episode_record["moves"].append(action)
 
-        # bookkeeping
-        rec.update({"reward": reward, "solved": reward > 0, "moves_len": moves})
+        # Record the episode outcome
+        episode_record.update({
+            "reward": total_reward,
+            "solved": total_reward > 0,
+            "moves_len": moves,
+        })
+
         if self.keep_history:
-            rec["analyzer"] = self.analyzer.summary()
-            self.episodes.append(rec)
+            episode_record["analyzer"] = self.analyzer.summary()
+            self.episodes.append(episode_record)
 
+        # Update stats
         self.stats["episodes"] += 1
-        self.stats["avg_moves"] = (self.stats["avg_moves"]*(self.stats["episodes"]-1)+moves)/self.stats["episodes"]
-        if reward > 0:
+        self.stats["avg_moves"] = (
+                (self.stats["avg_moves"] * (self.stats["episodes"] - 1) + moves)
+                / self.stats["episodes"]
+        )
+        if total_reward > 0:
             self.stats["success"] += 1
 
-        # push to buffer
-        for s, π in zip(states, policies):
+        # Push states, policies, and rewards into the buffer
+        for state, policy in zip(states, policies):
             if augment:
                 for rot in range(4):
                     for flip in (False, True):
-                        aug_s = np.rot90(s, k=rot, axes=(0,1))
-                        if flip: aug_s = np.flip(aug_s, axis=1)
-                        aug_π = self._transform_policy(π, rot, flip)
-                        self.buffer.push((aug_s, aug_π, reward))
+                        augmented_state = np.rot90(state, k=rot, axes=(0, 1))
+                        if flip:
+                            augmented_state = np.flip(augmented_state, axis=1)
+                        augmented_policy = self._transform_policy(policy, rot, flip)
+                        self.buffer.push((augmented_state, augmented_policy, total_reward))
             else:
-                self.buffer.push((s, π, reward))
+                self.buffer.push((state, policy, total_reward))
+
 
     # ------------------ checkpoint / eval ------------------ #
     def _save_ckpt(self, tag: str):
@@ -1109,64 +1218,86 @@ class Agent:
 
     # ------------------------- train ----------------------- #
     def train(
-        self,
-        batch: int = 256,
-        epochs: int = 1,
-        lr: float = 1e-3,
-        log_cb: Optional[Callable[[Dict], None]] = None,
+            self,
+            batch: int = 256,
+            epochs: int = 1,
+            lr: float = 1e-3,
+            log_cb: Optional[Callable[[Dict], None]] = None,
     ) -> None:
-
+        """
+        מאמן את הרשת תוך שימוש ב־OneCycleLR, כולל MLflow logging ו־Checkpointing.
+        תומך ב־PER עם Importance Sampling Weights.
+        """
         if len(self.buffer) < batch:
             return
 
         opt = torch.optim.Adam(self.model.parameters(), lr=lr)
         sched = torch.optim.lr_scheduler.OneCycleLR(
             opt, max_lr=lr,
-            steps_per_epoch=max(1, len(self.buffer)//batch),
+            steps_per_epoch=max(1, len(self.buffer) // batch),
             epochs=epochs
         )
 
-        # ---------------- training loop (FP32, no AMP) ---------------- #
         start = time.time()
-        for ep in range(epochs):
-            # הגדל מספר הסימולציות אם רצוי
-            self.mcts.sims = int(self.mcts.sims * (1 + ep / max(1, epochs)))
 
-            # ----- דגימה -----
-            obs_t, π_t, z_t = self.buffer.sample_as_tensors(batch, device=self.device)
-            # sample_as_tensors כבר מחזיר float32; נוודא:
-            obs_t = obs_t.float().contiguous()
-            π_t = π_t.float().contiguous()
-            z_t = z_t.float().contiguous()
+        for epoch in range(epochs):
+            self.mcts.sims = int(self.mcts.sims * (1 + epoch / epochs))
+
+            # ==== דגימה עם אינדקסים וחשבון IS weights ====
+            obs_t, pi_t, z_t, indices = self.buffer.sample_as_tensors(batch, device=self.device)
+
+            # חשב את חשיבות הדגימות עבור PER-IS
+            # snapshot של priorities
+            heap_list = list(self.buffer.heap)
+            priorities = np.array([abs(x[0]) for x in heap_list], dtype=np.float32)
+            probs = priorities ** self.buffer.alpha
+            probs /= probs.sum() + 1e-8
+
+            sample_probs = probs[indices]
+            # חישוב IS weights: w_i = (1/N * 1/p_i) ** beta  -- נורמליזציה
+            beta = getattr(self.buffer, 'beta', 0.4)
+            N = len(self.buffer)
+            is_weights = (N * sample_probs) ** (-beta)
+            is_weights /= is_weights.max() + 1e-8
+            is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device).unsqueeze(1)  # (B,1)
 
             opt.zero_grad()
+            logits, v_pred = self.model(obs_t)
 
-            logits, v_hat = self.model(obs_t)  # ← FP32
+            # --- Policy Loss (לא צריך IS weight, משקלות על value בלבד) ---
             loss_pol = F.kl_div(
-                F.log_softmax(logits, dim=1), π_t,
+                F.log_softmax(logits, dim=-1),
+                pi_t,
                 reduction="batchmean"
             )
-            loss_val = F.mse_loss(v_hat, z_t)
-            loss = loss_pol + loss_val  # עדיין FP32, אין .to()
+            # --- Value Loss + IS Weights ---
+            td_error = v_pred - z_t
+            loss_val = ((td_error ** 2) * is_weights.squeeze()).mean()
+            loss = loss_pol + loss_val
 
-            loss.backward()  # ← גרף נשמר
+            loss.backward()
             opt.step()
+
+            # ==== עדכון priorities (PER) ====
+            td_err = (v_pred.detach() - z_t).abs().cpu().numpy()
+            td_err = td_err / (td_err.max() + 1e-6)
+            self.buffer.update_priorities(indices, td_err + 1e-6)
+
             sched.step()
-
             self._global_step += 1
-            # ... (לוג, checkpoint, MLflow) ...
 
-
-            # logging
+            # Logging
             log = {
                 "step": self._global_step,
-                "epoch": ep,
+                "epoch": epoch,
                 "loss": loss.item(),
                 "loss_pol": loss_pol.item(),
                 "loss_val": loss_val.item(),
                 "lr": sched.get_last_lr()[0],
             }
-            if log_cb: log_cb(log)
+            if log_cb:
+                log_cb(log)
+
             if self._mlflow_ctx:
                 mlflow.log_metrics({
                     "loss": loss.item(),
@@ -1175,15 +1306,15 @@ class Agent:
                     "lr": log["lr"],
                 }, step=self._global_step)
 
-            # eval & ckpt every 20 %
-            if (ep+1) % max(1, epochs//5) == 0:
-                sr = self._quick_eval()
+            # Checkpointing and periodic evaluation
+            if (epoch + 1) % max(1, epochs // 5) == 0:
+                success_rate = self._quick_eval()
                 if self._mlflow_ctx:
-                    mlflow.log_metric("success_rate", sr, step=self._global_step)
-                self._save_ckpt(f"e{ep+1:02d}")
+                    mlflow.log_metric("success_rate", success_rate, step=self._global_step)
+                self._save_ckpt(f"epoch_{epoch + 1:02d}")
 
         if self._mlflow_ctx:
-            mlflow.log_metric("train_time_sec", time.time()-start)
+            mlflow.log_metric("train_time_sec", time.time() - start)
             mlflow.end_run()
 
             # ------------------------------------------------------------------ #
@@ -1244,18 +1375,14 @@ class PegSolitaireActionSpace:
         return f"<ActionSpace size={len(self)}>"
 
 
-import os
-import pickle
-from pathlib import Path
 
-import torch
-import numpy as np
+
 
 
 # -------- הגדרות כלליות -------- #
 AGENT_PATH = Path("peg_agent.pt")
 HISTORY_PATH = Path("episode_history.pkl")
-TRAIN_EPISODES = 800
+TRAIN_EPISODES = 5
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"🔧 Using device: {DEVICE}")
 
@@ -1283,7 +1410,7 @@ def load_agent(path: Path = AGENT_PATH) -> Agent:
     model.eval()
 
     print("📦 Agent loaded successfully.")
-    return Agent(env, model, asp, ReplayBuffer(), sims=ckpt.get("sims", 100), device=DEVICE, keep_history=True)
+    return Agent(env, model, asp, ReplayBuffer(), sims=ckpt.get("sims", 33), device=DEVICE, keep_history=True)
 
 
 # -------- אימון / הרצה -------- #
@@ -1292,16 +1419,17 @@ def train_new_agent(episodes: int = TRAIN_EPISODES) -> Agent:
     asp = PegSolitaireActionSpace(env.board_mask)
     model = PegSolitaireNet(len(asp), device=DEVICE)
     buffer = ReplayBuffer()
-    agent = Agent(env, model, asp, buffer, sims=100, device=DEVICE, keep_history=True)
+    agent = Agent(env, model, asp, buffer, sims=33, device=DEVICE, keep_history=True)
 
     print("🚀 Starting training loop ...")
     for ep in range(1, episodes + 1):
+        print(ep)
         agent.self_play_episode()
 
-        if ep % 10 == 0 and len(buffer) >= 1024:
-            agent.train(batch=256, epochs=3, lr=1e-3)
+        if len(buffer) >= 256:
+            agent.train(batch=256, epochs=1, lr=1e-3)
 
-        if ep % 100 == 0:
+        if ep % 1 == 0:
             s = agent.stats
             print(f"  ↳ ep {ep:4d}/{episodes} | "
                   f"buffer={len(buffer):5d} | "
@@ -1317,74 +1445,9 @@ def train_new_agent(episodes: int = TRAIN_EPISODES) -> Agent:
     return agent
 
 
-# -------- הפעלה ראשית -------- #
-if __name__ == "__main__":
-    agent = load_agent() if AGENT_PATH.exists() else train_new_agent()
 
-import os
-import pickle
-import tkinter as tk
-from pathlib import Path
-import random
-import numpy as np
-import torch
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
-
-
-# Paths & Config
-AGENT_PATH = Path("peg_agent.pt")
-HISTORY_PATH = Path("episode_history.pkl")
 PLOTS_DIR = Path("plots")
-TRAIN_EPISODES = 800
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-print(f"🧪 Using device: {DEVICE}")
 
-# ------------------ Save / Load ------------------ #
-def save_agent(agent: Agent, path: Path = AGENT_PATH):
-    data = {
-        "state_dict": agent.model.state_dict(),
-        "n_actions": len(agent.action_space),
-        "sims": agent.mcts.sims,
-    }
-    torch.save(data, path)
-    print(f"✅ Agent saved to: {path.resolve()}")
-
-def load_agent(path: Path = AGENT_PATH) -> Agent:
-    if not path.exists():
-        raise FileNotFoundError(f"No agent checkpoint at {path}")
-    ckpt = torch.load(path, map_location=DEVICE)
-    env = PegSolitaireEnv(Board, Game)
-    asp = PegSolitaireActionSpace(env.board_mask)
-    model = PegSolitaireNet(ckpt["n_actions"], device=DEVICE)
-    model.load_state_dict(ckpt["state_dict"])
-    model.eval()
-    agent = Agent(env, model, asp, ReplayBuffer(), sims=ckpt.get("sims",100), device=DEVICE, keep_history=True)
-    print("📦 Agent loaded.")
-    return agent
-
-# ------------------ Training ------------------ #
-def train_new_agent(episodes: int = TRAIN_EPISODES) -> Agent:
-    env = PegSolitaireEnv(Board, Game)
-    asp = PegSolitaireActionSpace(env.board_mask)
-    model = PegSolitaireNet(len(asp), device=DEVICE)
-    buf = ReplayBuffer()
-    agent = Agent(env, model, asp, buf, sims=100, device=DEVICE, keep_history=True)
-
-    print("🚀 Starting training...")
-    for ep in range(1, episodes + 1):
-        agent.self_play_episode()
-        if ep % 10 == 0 and len(buf) >= 1024:
-            agent.train(batch=256, epochs=3, lr=1e-3)
-        if ep % 100 == 0:
-            s = agent.stats
-            print(f"  ↳ ep {ep}/{episodes} | buf={len(buf):5d} | succ={s['success']}/{s['episodes']} | avg_moves={s['avg_moves']:.1f}")
-
-    save_agent(agent)
-    if agent.episodes:
-        pickle.dump(agent.episodes, open(HISTORY_PATH, "wb"))
-        print(f"📘 History saved to {HISTORY_PATH.resolve()}")
-    return agent
 
 # ------------------ Plotting ------------------ #
 def generate_plots():
@@ -1414,134 +1477,241 @@ def generate_plots():
     plot_series(ep, suc, "Cumulative Success-Rate", "Success-rate", "success.png")
     print(f"✅ Plots saved. Final success rate: {suc[-1]*100:.2f}%")
 
-# ------------------ GUI ------------------ #
+from tkinter import messagebox
 class PegSolitaireGUI(tk.Frame):
+    """GUI אינטראקטיבי כולל רמזים מה-Agent (פועל גם ללא Agent)."""
+
+    # ——— קבועי עיצוב ———
     CELL, R, PAD = 60, 22, 16
-    PEG, HOLE, OUTL, HILITE = "#FFD600","#202020","#333","#42A5F5"
+    PEG, HOLE, OUTL, HILITE = "#FFD600", "#202020", "#333", "#42A5F5"
     SUGGEST, BG = "#00C853", "#eeeeee"
     BAR_W, BAR_H = 160, 16
 
-    def __init__(self, master, game: Game, agent: Agent = None):
+    def __init__(self, master, game: Game, agent: Agent | None = None) -> None:
         super().__init__(master, bg=self.BG)
         self.game, self.agent = game, agent
-        self.sel = None
-        self.hint = None
+        self.sel: tuple[int, int] | None = None  # חור נבחר
+        self.hint: tuple[tuple[int, int], tuple[int, int]] | None = None  # (src,dst)
 
-        side = 7*self.CELL + 2*self.PAD
-        self.canvas = tk.Canvas(self, width=side, height=side, bg=self.BG, highlightthickness=0)
+        side = 7 * self.CELL + 2 * self.PAD
+        self.canvas = tk.Canvas(self, width=side, height=side,
+                                bg=self.BG, highlightthickness=0)
         self.canvas.pack()
-        top = tk.Frame(self,bg=self.BG); top.pack(pady=4, fill="x")
-        self.status = tk.Label(top, font=("Arial",14),bg=self.BG,anchor="w")
-        self.status.pack(side="left",expand=True,fill="x")
-        self.bar = tk.Canvas(top,width=self.BAR_W,height=self.BAR_H,bg=self.BG,highlightthickness=0)
-        self.bar.pack(side="right",padx=6)
 
-        btns=tk.Frame(self,bg=self.BG); btns.pack()
-        for txt,cmd in [("↩️ Undo",self.on_undo),("↪️ Redo",self.on_redo),("🔄 Reset",self.on_reset),("🤖 Hint",self.on_hint)]:
-            tk.Button(btns,text=txt,command=cmd).pack(side="left",padx=3)
+        # ——— פס עליון ———
+        top = tk.Frame(self, bg=self.BG)
+        top.pack(pady=4, fill="x")
+        self.status = tk.Label(top, font=("Arial", 14), bg=self.BG, anchor="w")
+        self.status.pack(side="left", expand=True, fill="x")
+        self.bar = tk.Canvas(top, width=self.BAR_W, height=self.BAR_H,
+                             bg=self.BG, highlightthickness=0)
+        self.bar.pack(side="right", padx=6)
 
-        self.log = tk.Listbox(self,width=40,height=6,font=("Consolas",11))
-        self.log.pack(pady=(8,0))
-        self.canvas.bind("<Button-1>",self.on_click)
+        # ——— כפתורים ———
+        btns = tk.Frame(self, bg=self.BG);
+        btns.pack()
+        for txt, cmd in [("\u21a9 Undo", self.on_undo),
+                         ("\u21aa Redo", self.on_redo),
+                         ("\u21bb Reset", self.on_reset),
+                         ("\U0001f916 Hint", self.on_hint)]:
+            tk.Button(btns, text=txt, command=cmd).pack(side="left", padx=3)
+
+        # ——— לוג מהלכים ———
+        self.log = tk.Listbox(self, width=42, height=6, font=("Consolas", 11))
+        self.log.pack(pady=(8, 0))
+
+        # ——— קיצורי מקשים ———
+        self.canvas.bind("<Button-1>", self.on_click)
         master.bind("<Control-z>", lambda e: self.on_undo())
         master.bind("<Control-y>", lambda e: self.on_redo())
+
         self.redraw()
 
-    def _xy(self,pos): return (self.PAD+pos[1]*self.CELL+self.CELL//2, self.PAD+pos[0]*self.CELL+self.CELL//2)
+    # ------------------------------------------------------------------ #
+    #                            ציור לוח                                #
+    # ------------------------------------------------------------------ #
+    def _xy(self, pos: tuple[int, int]) -> tuple[int, int]:
+        """המרת (row,col) לקואורדינטות קנבס."""
+        return (self.PAD + pos[1] * self.CELL + self.CELL // 2,
+                self.PAD + pos[0] * self.CELL + self.CELL // 2)
 
-    def redraw(self):
+    def redraw(self) -> None:
         self.canvas.delete("all")
+
+        # פגים / חורים
         for pos in Board.LEGAL_POSITIONS:
-            x,y=self._xy(pos)
-            fill=self.PEG if self.game.board.get(pos)==1 else self.HOLE
-            width = 3 if pos==self.sel else 1
-            outline=self.HILITE if pos==self.sel else self.OUTL
-            self.canvas.create_oval(x-self.R,y-self.R,x+self.R,y+self.R,fill=fill,outline=outline,width=width)
+            x, y = self._xy(pos)
+            fill = self.PEG if self.game.board.get(pos) == 1 else self.HOLE
+            width = 3 if pos == self.sel else 1
+            outline = self.HILITE if pos == self.sel else self.OUTL
+            self.canvas.create_oval(x - self.R, y - self.R, x + self.R, y + self.R,
+                                    fill=fill, outline=outline, width=width)
 
+        # מהלכים חוקיים מהחור הנבחר
         if self.sel:
-            for s,d,_ in self.game.get_legal_moves():
-                if s==self.sel:
-                    x,y=self._xy(d)
-                    self.canvas.create_oval(x-self.R//2,y-self.R//2,x+self.R//2,y+self.R//2,outline=self.HILITE,width=3)
+            for s, d, _ in self.game.get_legal_moves():
+                if s == self.sel:
+                    x, y = self._xy(d)
+                    self.canvas.create_oval(x - self.R // 2, y - self.R // 2,
+                                            x + self.R // 2, y + self.R // 2,
+                                            outline=self.HILITE, width=3)
 
+        # רמז
         if self.hint:
-            src,dst=self.hint
-            x1,y1=self._xy(src); x2,y2=self._xy(dst)
-            self.canvas.create_line(x1,y1,x2,y2,fill=self.SUGGEST,width=5,arrow=tk.LAST)
+            src, dst = self.hint
+            x1, y1 = self._xy(src);
+            x2, y2 = self._xy(dst)
+            self.canvas.create_line(x1, y1, x2, y2,
+                                    fill=self.SUGGEST, width=5, arrow=tk.LAST)
 
-        self._update_status(); self._update_buttons(); self._update_log(); self._update_bar()
+        self._update_status()
+        self._update_log()
+        self._update_bar()
 
-    def _update_bar(self):
+    # ------------------------------------------------------------------ #
+    #                          פס הערך                                    #
+    # ------------------------------------------------------------------ #
+    def _update_bar(self) -> None:
         v = 0.0
         if self.agent:
-            obs=self.game.board.encode_observation()
-            t=torch.tensor(obs,dtype=torch.float32,device=self.agent.device).permute(2,0,1).unsqueeze(0)
-            with torch.no_grad(): _,v_out=self.agent.model(t)
-            v=float(v_out)
-        frac=(v+1)/2
-        length=int(frac*self.BAR_W)
-        col="#d50000" if v<-0.3 else "#9e9e9e" if v<0.3 else "#00c853"
+            obs = self.game.board.encode_observation()
+            t = torch.tensor(obs, dtype=torch.float32, device=self.agent.device)
+            t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
+            with torch.no_grad():
+                _, v_out = self.agent.model(t)
+                v = float(v_out)
+
+        frac = (v + 1) / 2  # ↦ [0,1]
+        length = int(frac * self.BAR_W)
+        col = "#d50000" if v < -0.3 else "#9e9e9e" if v < 0.3 else "#00c853"
         self.bar.delete("all")
-        self.bar.create_rectangle(0,0,length,self.BAR_H,fill=col,width=0)
-        self.bar.create_rectangle(0,0,self.BAR_W,self.BAR_H,outline="#555")
+        self.bar.create_rectangle(0, 0, length, self.BAR_H, fill=col, width=0)
+        self.bar.create_rectangle(0, 0, self.BAR_W, self.BAR_H, outline="#555")
 
-    def on_click(self,e):
-        pos=((e.y-self.PAD)//self.CELL,(e.x-self.PAD)//self.CELL)
-        if pos not in Board.LEGAL_POSITIONS: return
-        if self.sel is None and self.game.board.get(pos)==1: self.sel=pos
-        elif self.sel and pos!=self.sel:
-            success,_=self.game.apply_move(self.sel,pos)[:2]
+    # ------------------------------------------------------------------ #
+    #                     אינטראקציה עם לוח                               #
+    # ------------------------------------------------------------------ #
+    def on_click(self, e) -> None:
+        pos = ((e.y - self.PAD) // self.CELL,
+               (e.x - self.PAD) // self.CELL)
+        if pos not in Board.LEGAL_POSITIONS:
+            return
+
+        if self.sel is None and self.game.board.get(pos) == 1:
+            self.sel = pos
+        elif self.sel and pos != self.sel:
+            success, _ = self.game.apply_move(self.sel, pos)[:2]
             if success:
-                self.sel=self.hint=None
-        else: self.sel=None
+                self.sel = self.hint = None
+        else:
+            self.sel = None
         self.redraw()
 
-    def on_undo(self): self._call(self.game.undo)
-    def on_redo(self): self._call(self.game.redo)
-    def on_reset(self): self._call(self.game.reset)
+    # קיצורי פעולות
+    def on_undo(self):
+        self._call(self.game.undo)
 
-    def _call(self,fn):
-        if not fn(): return
-        self.sel=self.hint=None
+    def on_redo(self):
+        self._call(self.game.redo)
+
+    def on_reset(self):
+        self._call(self.game.reset)
+
+    def _call(self, fn):
+        if not fn():
+            return
+        self.sel = self.hint = None
         self.redraw()
 
-    def on_hint(self):
+    # ------------------------------------------------------------------ #
+    #                            רמז מה-Agent                             #
+    # ------------------------------------------------------------------ #
+    def _move_to_action(self, move: tuple) -> tuple[int, int, int]:
+        """
+        המרה מ-(src,dst,mid) לפורמט (row,col,dir).
+
+        • תומכת גם ב-DIRECTIONS באורך 1 וגם באורך 2.
+        """
+        src, dst, _ = move
+        dr, dc = dst[0] - src[0], dst[1] - src[1]
+
+        for d, (drow, dcol) in enumerate(Game.DIRECTIONS):
+            # אם Game.DIRECTIONS = (±1,0/0,±1) → קפיצה היא 2*δ
+            if (dr, dc) == (2 * drow, 2 * dcol):
+                return (src[0], src[1], d)
+            # אם Game.DIRECTIONS = (±2,0/0,±2) → קפיצה שווה בדיוק ל־δ
+            if (dr, dc) == (drow, dcol):
+                return (src[0], src[1], d)
+
+        raise ValueError(f"Cannot map move {move} to action – check DIRECTIONS.")
+
+    def on_hint(self) -> None:
         if not self.agent:
-            tk.messagebox.showinfo("Hint","No agent loaded.")
+            messagebox.showinfo("Hint", "No agent loaded.")
             return
         if self.game.is_game_over():
             self.status.config(text="Game over.")
             return
-        obs=self.game.board.encode_observation()
-        π = self.agent.mcts.run(obs, tau=0.0)
-        legal=self.game.get_legal_moves()
-        mask=self.agent.action_space.legal_action_mask(legal)
-        idx=int(np.argmax(π*mask))
-        action=self.agent.action_space.from_index(idx)
-        dr,dc=Game.DIRECTIONS[action[2]]
-        self.hint=((action[0],action[1]),(action[0]+dr,action[1]+dc))
+
+        # הפעל את הרשת ישירות (מהיר בהרבה מ-MCTS)
+        obs = self.game.board.encode_observation()
+        t = torch.tensor(obs, dtype=torch.float32, device=self.agent.device)
+        t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
+        with torch.no_grad():
+            logits, _ = self.agent.model(t)
+            π = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+
+        legal_moves = self.game.get_legal_moves()
+        if not legal_moves:
+            self.status.config(text="No legal moves.")
+            self.hint = None
+            return
+
+        # מיפוי legal_move → action
+        legal_actions = [self._move_to_action(m) for m in legal_moves]
+        legal_indices = [self.agent.action_space.to_index(a) for a in legal_actions]
+
+        π_masked = np.zeros_like(π)
+        π_masked[legal_indices] = π[legal_indices]
+        if π_masked.sum() == 0:
+            self.status.config(text="Agent unsure.")
+            self.hint = None
+            return
+
+        best_idx = int(np.argmax(π_masked))
+        best_action = self.agent.action_space.from_index(best_idx)
+        dr, dc = Game.DIRECTIONS[best_action[2]]
+        self.hint = ((best_action[0], best_action[1]),
+                     (best_action[0] + dr, best_action[1] + dc))
         self.redraw()
 
-    def _update_status(self):
+    # ------------------------------------------------------------------ #
+    #                סטטוס / לוג מהלכים                                   #
+    # ------------------------------------------------------------------ #
+    def _update_status(self) -> None:
         if self.game.is_win():
-            text="Victory! Single peg in center."
+            text = "Victory! Single peg in center."
         elif self.game.is_game_over():
-            text=f"Game Over in {len(self.game.move_log)} moves."
+            text = f"Game Over in {len(self.game.move_log)} moves."
         else:
-            text=f"Pegs: {self.game.board.count_pegs()} | Moves: {len(self.game.move_log)}"
+            text = f"Pegs: {self.game.board.count_pegs()} | Moves: {len(self.game.move_log)}"
         self.status.config(text=text)
 
-    def _update_buttons(self):
-        pass  # disabled for brevity
+    def _update_log(self) -> None:
+        self.log.delete(0, tk.END)
+        for i, (s, _, d) in enumerate(self.game.move_log, 1):
+            self.log.insert(tk.END, f"{i:2}: {s} → {d}")
 
-    def _update_log(self):
-        self.log.delete(0,tk.END)
-        for i, (s,_,d) in enumerate(self.game.move_log,1):
-            self.log.insert(tk.END, f"{i:2}: {s}→{d}")
 
-# Main
+# ------------------------------------------------------------------ #
+#                                Main                                #
+# ------------------------------------------------------------------ #
 if __name__ == "__main__":
-    agent = load_agent() if AGENT_PATH.exists() else train_new_agent()
+    # טען Agent אם קיים, אחרת הרץ ללא Agent (GUI יעבוד, רק ללא רמזים)
+    if AGENT_PATH.exists():
+        agent = load_agent()
+    else :
+        agent = train_new_agent()
     generate_plots()
     root = tk.Tk()
     root.title("Peg-Solitaire AI")
