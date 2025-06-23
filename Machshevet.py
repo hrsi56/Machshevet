@@ -1,11 +1,14 @@
 from __future__ import annotations
-from scipy.ndimage import convolve
+
 import pickle
 import tkinter as tk
 from pathlib import Path
 
 import numpy as np
 from matplotlib import pyplot as plt
+from scipy.ndimage import convolve
+
+
 
 
 class Board:
@@ -143,13 +146,10 @@ class ValueNetwork(nn.Module):
 #  Reward configuration – מומלץ ליצור פעם אחת ב-__init__ של Game:
 #     self.reward_cfg = RewardCfg()            (או לטעון מ-YAML)
 # ----------------------------------------------------------------------
-from dataclasses import dataclass
-import numpy as np
 
 # ───────────────── Reward configuration ──────────────────
 from dataclasses import dataclass
 import numpy as np
-
 @dataclass
 class RewardCfg:
     # PBRS
@@ -165,6 +165,12 @@ class RewardCfg:
     # קנס כישלון
     base_penalty: float = -2.0
     k_pen:        float = 0.5            # תוספת קנס לכל פג
+
+    # --------- חדשים: בידוד פגים ----------
+    penalty_isolation_step: float = -2.0     # קנס מיידי על בידוד חדש שנוצר בצעד זה
+    phi4_weight: float = 1.2                 # משקל של בידוד בפוטנציאל Φ הכולל
+    phi4_mean:   float = -0.5                # ממוצע משוער ל־φ4 (לנרמול)
+    phi4_std:    float = 1.0                 # סטיית תקן משוערת ל־φ4
 # ──────────────────────────────────────────────────────────
 class Game:
     """
@@ -246,7 +252,7 @@ class Game:
         ok, over = self.is_legal_move(src, dst)
         if not ok:
             # אם המהלך לא חוקי, החזר קנס קבוע.
-            return False, -1.0, self.is_game_over(), {"reason": "illegal move"}
+            return False, -10.0, self.is_game_over(), {"reason": "illegal move"}
 
         # --- התחלה: יישום PBRS יעיל ---
 
@@ -356,7 +362,27 @@ class Game:
     def set_custom_metadata(self, k: str, v):
         self.custom_metadata[k] = v
 
-    # Game class
+    @staticmethod
+    def _count_truly_isolated_pegs(board) -> int:
+        arr = board.as_array()
+        count = 0
+
+        for r in range(7):
+            for c in range(7):
+                if arr[r, c] != 1:
+                    continue
+                # בדוק 4 כיוונים: האם אפשר לקפוץ ממנו או אליו
+                isolated = True
+                for dr, dc in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
+                    r2, c2 = r + dr, c + dc
+                    mid = (r + r2) // 2, (c + c2) // 2
+                    if 0 <= r2 < 7 and 0 <= c2 < 7 and arr[mid] == 1 and arr[r2, c2] == 0:
+                        isolated = False
+                        break
+                if isolated:
+                    count += 1
+
+        return count    # Game class
 
     # ------------------------------------------------------------------
     # ----------------------------------------------------------------------
@@ -369,41 +395,36 @@ class Game:
             potential_before: float,
             potential_after: float
     ) -> float:
-        """
-        PBRS + בונוס סופי אקספוננציאלי:
-            ΔΦ  →  tanh-scaled  (או step_floor אם ΔΦ ≤ 0)
-            solved-bonus(m)     (אם ניצחנו)
-            penalty             (אם כשלנו)
-
-        solved-bonus(moves):
-            r = moves / 31   ∈ (0,1]
-            curve = (exp(k·r) − 1) / (exp(k) − 1)      ← k>0
-            bonus = bonus_min + curve · (bonus_max − bonus_min)
-            ⇒ הפער גדל ככל שמתקרבים ל-31.
-        """
         cfg: RewardCfg = getattr(self, "reward_cfg", RewardCfg())
 
-        # ---------- אות התקדמות ΔΦ ----------
+        # ---------- בידוד חדש = עונש ----------
+        # העבר את הלוחות הנוכחי והקודם ישירות
+        isolated_before = self._count_truly_isolated_pegs(self.move_history[-1][3]) if self.move_history else 0
+        isolated_after = self._count_truly_isolated_pegs(self.board)
+
+        if isolated_after > isolated_before:
+            return -20.0 * (isolated_after - isolated_before)  # עונש חריף מיידי
+
+        # ---------- ΔΦ רגיל ----------
         delta_raw = cfg.gamma * potential_after - potential_before
         delta_phi = np.tanh(delta_raw / cfg.scale_phi)
         reward_step = delta_phi if delta_phi > 0 else cfg.step_floor
 
-        # ---------- מצב לא סופי ----------
         if not done:
             return float(reward_step)
 
-        # ---------- סיום המשחק ----------
-        moves = len(self.move_log)  # 1 … 31
+        # ---------- סיום ----------
+        moves = len(self.move_log)
         solved = self.is_win()
 
         if solved:
-            r = max(1, min(moves, 31)) / 31.0  # יחס נורמליזציה
+            r = max(1, min(moves, 31)) / 31.0
             k = cfg.bonus_curve_k
             curve = (np.exp(k * r) - 1.0) / (np.exp(k) - 1.0)
             bonus = cfg.bonus_win_min + curve * (cfg.bonus_win_max - cfg.bonus_win_min)
             return float(reward_step + bonus)
 
-        # ---------- לא נפתר – קנס יחסי לפגים ----------
+        # ---------- קנס על כישלון ----------
         pegs_left = self.board.count_pegs()
         penalty = cfg.base_penalty - cfg.k_pen * (pegs_left - 1)
         return float(reward_step + penalty)
@@ -486,58 +507,60 @@ class PegSolitaireEnv:
     # --------------------------------------------------------------
   # אם לא זמין, ראה הערה מתחת
 
+
     # משקלות קבועות – שוכנות פעם אחת במחלקה
     _K_REACH = np.array([[0, 1, 0],
                          [1, 0, 1],
                          [0, 1, 0]], dtype=np.int8)  # סופרת שכני “צעד-חצי”
 
     def _calculate_potential(self, board) -> float:
-        arr = board.as_array().astype(np.float32)  # (7,7)
-        mask = self.board_mask  # (7,7)
-        pegs = arr * mask  # אפס מחוץ ללוח
-        N = pegs.sum()  # #Peg
+        arr = board.as_array().astype(np.float32)  # ← שים לב: שימוש ב־board מהפרמטר
+        mask = self.board_mask
+        pegs = arr * mask
+        N = pegs.sum()
 
         # ---------- φ0 : peg count ----------
-        phi0 = -N  # פחות פגים → טוב
+        phi0 = -N
 
-        # ---------- φ1 : centrality (משוקלל) ----------
+        # ---------- φ1 : centrality ----------
         phi1 = (pegs * CENTRALITY_WEIGHTS).sum() / (N + 1e-5)
 
         # ---------- φ2 : pagoda ----------
         phi2 = (pegs * PAGODA_VALUES).sum()
 
-        # ---------- φ3 : isolation / edge / corner ----------
+        # ---------- φ3 : isolation / corner / edge ----------
         if N <= 1:
             phi3 = 0.0
         else:
-            # מסכת “שכן במרחק חצי קפיצה”
             neigh = convolve(pegs, self._K_REACH, mode="constant", cval=0)
-            reachable = (
-                    (neigh > 0) &  # יש שכן
-                    (convolve(mask - pegs, self._K_REACH, mode="constant", cval=0) > 0)
-            )  # ויש חור מעבר
+            reachable = ((neigh > 0) &
+                         (convolve(mask - pegs, self._K_REACH, mode="constant", cval=0) > 0))
             isolated = int(((pegs == 1) & (~reachable)).sum())
 
             corners = int(sum(pegs[r, c] for r, c in CORNER_POSITIONS))
             edges = int((pegs * EDGE_MASK).sum())
             phi3 = -(5.0 * isolated + 2.0 * corners + 1.0 * edges)
 
-        # ---------- נרמול אוטומטי ----------
-        # ממוצעים ואסטיות משוערות (חשב פעם אחת offline / או למד דינמית)
-        μ = np.array([-17.0, 0.25, 28.0, -12.0], dtype=np.float32)
-        σ = np.array([10.0, 0.12, 20.0, 8.0], dtype=np.float32)
-        φ = np.array([phi0, phi1, phi2, phi3], dtype=np.float32)
-        φn = (φ - μ) / (σ + 1e-5)  # z-score
+        # ---------- φ4 : truly isolated ----------
+        truly_isolated = Game._count_truly_isolated_pegs(board)
+        phi4 = -10.0 * truly_isolated  # ערך גולמי; ינורמל בהמשך
 
-        w = np.array([0.9, 0.9, 0.6, 0.8], dtype=np.float32)  # משקלות
+        # ---------- Z-score normalization ----------
+        cfg: RewardCfg = getattr(self, "reward_cfg", RewardCfg())
+        μ = np.array([-17.0, 0.25, 28.0, -12.0, 2], dtype=np.float32)
+        σ = np.array([10.0, 0.12, 20.0, 8.0, 1], dtype=np.float32)
+        φ = np.array([phi0, phi1, phi2, phi3, phi4], dtype=np.float32)
+        φn = (φ - μ) / (σ + 1e-5)
+
+        w = np.array([0.9, 0.9, 0.6, 0.8, 1], dtype=np.float32)
         total_phi = float((w * φn).sum())
 
         if getattr(self, "debug_potential", False):
             print(f"[Φ] raw={φ}, norm={φn.round(2)}, Φ={total_phi:.2f}")
 
         return total_phi
-        # כל שאר השיטות שלך נשארו ללא שינוי – העתקנו ככתבן וכלשונן
-    # ------------------------------------------------------------------
+
+        # ------------------------------------------------------------------
     def reset(self, state: Optional[Union[dict, "Board"]] = None) -> Tuple[np.ndarray, dict]:
         if state is None:
             self.game.reset()
@@ -725,8 +748,7 @@ class PegSolitaireNet(nn.Module):
 
 
 
-import heapq, itertools, random
-from typing import List, Tuple, Optional
+import heapq, itertools
 import numpy as np
 import torch
 
@@ -1150,108 +1172,88 @@ class Agent:
     # ------------------ self-play episode ------------------ #
     def self_play_episode(
             self,
-            *,
             augment: bool = True,
             gamma: float = 0.995,
-            n_step: int = 6,
-            win_bonus: float = 5.0,
-            oversample: int = 3,
-            # ---------- NEW: length shaping ----------
-            step_bonus_base: float = 1.03,  # בסיס הבונוס האקספוננציאלי
-            step_bonus_scale: float = 0.10,  # גודל הבונוס בצעד-1
     ) -> None:
-        """
-        AlphaZero-style self-play עם:
-          • n-step bootstrap   • win bonus / oversample
-          • exponential step-bonus   ← יעד 31 מהלכים
-        """
-
+        """ AlphaZero-style self-play: אוסף (state, π, G_t) """
         obs, _ = self.env.reset()
-        done, moves = False, 0
+        done = False
+        moves = 0
         states, policies, rewards = [], [], []
 
-        if hasattr(self, "analyzer"):
-            self.analyzer.reset()
+        # ---------- ניטור ----------
+        self.analyzer.reset()
+        ep_rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
 
-        # ---------- לולאת משחק ----------
+        # ---------- לולאה ----------
         while not done:
             moves += 1
             tau = 1.0 if moves < 10 else 0.05
+
+            # MCTS → π
             π = self.mcts.run(obs, tau=tau)
 
-            # מסיכת פעולות חוקיות (יעיל – דוגמים על legal בלבד)
+            # מסיכת פעולות חוקיות
             legal = self.env.get_legal_actions()
             legal_idx = [self.action_space.to_index(a) for a in legal]
-            π_legal = π[legal_idx]
-            π_legal /= π_legal.sum() + 1e-8
-            act_idx = int(np.random.choice(legal_idx, p=π_legal))
+            π_mask = π[legal_idx];
+            π_mask /= π_mask.sum() + 1e-8
+            act_idx = int(np.random.choice(legal_idx, p=π_mask))
             action = self.action_space.from_index(act_idx)
 
             # לוג + איסוף
             states.append(obs.copy())
             policies.append(π.copy())
+            with torch.no_grad():
+                v_est = self.model(
+                    torch.tensor(obs, dtype=torch.float32, device=self.device)
+                    .permute(2, 0, 1).unsqueeze(0)
+                )[1]
+            self.analyzer.log(obs, act_idx, v_est.item(), legal_idx)
 
-            obs, r_env, done, _ = self.env.step(action)
+            # צעד בסביבה
+            obs, r, done, _ = self.env.step(action)
+            rewards.append(float(r))
+            ep_rec["moves"].append(action)
 
-            # ----------- NEW: בונוס אורך-מהלך -----------
-            # גדל אקספוננציאלית (1, 1+scale, 1+scale*base, 1+scale*base², ...)
-            step_bonus = step_bonus_scale * (step_bonus_base ** (moves - 1))
-            rewards.append(float(r_env + step_bonus))
-            # --------------------------------------------
-
-            if hasattr(self, "analyzer"):
-                with torch.no_grad():
-                    v_pred = self.model(
-                        torch.tensor(obs, dtype=torch.float32, device=self.device)
-                        .permute(2, 0, 1).unsqueeze(0)
-                    )[1]
-                self.analyzer.log(obs, act_idx, v_pred.item(), legal_idx)
-
-        solved = self.env.game.is_win()
-
-        # ---------- n-step return ----------
-        final_val = win_bonus if solved else -win_bonus
-        returns = np.zeros(len(rewards), dtype=np.float32)
-        acc = 0.0
-        for t in reversed(range(len(rewards))):
-            acc = rewards[t] + gamma * acc
-            if (len(rewards) - t) >= n_step:
-                returns[t] = acc + (gamma ** n_step) * final_val
-            else:
-                returns[t] = acc
-
-        # ---------- באפר (עם oversample) ----------
-        repeat = oversample if solved else 1
-        for s, π, G in zip(states, policies, returns):
-            for _ in range(repeat):
-                if augment:
-                    for rot in range(4):
-                        for flip in (False, True):
-                            s_aug = np.rot90(s, k=rot, axes=(0, 1))
-                            s_aug = np.flip(s_aug, axis=1) if flip else s_aug
-                            π_aug = self._transform_policy(π, rot, flip)
-                            self.buffer.push((s_aug, π_aug, G))
-                else:
-                    self.buffer.push((s, π, G))
-
-        # ---------- סטטיסטיקות / היסטוריה ----------
-        if hasattr(self, "stats"):
-            self.stats.setdefault("episodes", 0)
-            self.stats.setdefault("avg_moves", 0.0)
-            self.stats.setdefault("success", 0)
-            self.stats["episodes"] += 1
-            self.stats["avg_moves"] = (
-                    (self.stats["avg_moves"] * (self.stats["episodes"] - 1) + moves)
-                    / self.stats["episodes"]
-            )
-            if solved:
-                self.stats["success"] += 1
-
-        if getattr(self, "keep_history", False) and hasattr(self, "episodes"):
-            ep_rec = dict(reward=float(np.sum(rewards)), solved=solved, moves=moves)
-            if hasattr(self, "analyzer"):
-                ep_rec["analyzer"] = self.analyzer.summary()
+        # ---------- סיכום ----------
+        ep_rec.update(
+            reward=float(np.sum(rewards)),
+            solved=self.env.game.is_win(),
+            moves_len=moves,
+        )
+        if self.keep_history:
+            ep_rec["analyzer"] = self.analyzer.summary()
             self.episodes.append(ep_rec)
+
+        # סטטיסטיקה
+        self.stats["episodes"] += 1
+        self.stats["avg_moves"] = (
+                (self.stats["avg_moves"] * (self.stats["episodes"] - 1) + moves)
+                / self.stats["episodes"]
+        )
+        if ep_rec["solved"]:
+            self.stats["success"] += 1
+
+        # ---------- חישוב G_t ----------
+        returns = np.zeros(len(rewards), dtype=np.float32)
+        G = 0.0
+        for t in reversed(range(len(rewards))):
+            G = rewards[t] + gamma * G
+            returns[t] = G
+
+        # ---------- כתיבה לבאפר ----------
+        for s, π, G in zip(states, policies, returns):
+            if augment:
+                for rot in range(4):
+                    for flip in (False, True):
+                        s_aug = np.rot90(s, k=rot, axes=(0, 1))
+                        if flip:
+                            s_aug = np.flip(s_aug, axis=1)
+                        π_aug = self._transform_policy(π, rot, flip)
+                        self.buffer.push((s_aug, π_aug, G))
+            else:
+                self.buffer.push((s, π, G))
 
     # ------------------ checkpoint / eval ------------------ #
     def _save_ckpt(self, tag: str):
@@ -1430,7 +1432,7 @@ class PegSolitaireActionSpace:
 # -------- הגדרות כלליות -------- #
 AGENT_PATH = Path("peg_agent.pt")
 HISTORY_PATH = Path("episode_history.pkl")
-TRAIN_EPISODES = 80
+TRAIN_EPISODES = 800
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"🔧 Using device: {DEVICE}")
 
