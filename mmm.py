@@ -1,13 +1,12 @@
 from __future__ import annotations
-from typing import Dict, Tuple, List, Union
-import numpy as np
-from matplotlib import pyplot as plt
-from torch import autograd, autocast, GradScaler
+
 import pickle
 import tkinter as tk
 from pathlib import Path
 
-Pos = Tuple[int, int]
+import numpy as np
+from matplotlib import pyplot as plt
+
 
 class Board:
     """
@@ -115,12 +114,11 @@ class Board:
                          for c in range(7)) for r in range(7)]
         return "\n".join(rows)
 
-from typing import Tuple, List, Dict, Optional, Callable, Union
+from typing import Tuple
 
 Pos    = Tuple[int, int]           # (row, col)
 Action = Tuple[int, int, int]      # (row, col, dir-idx)
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -141,12 +139,6 @@ class ValueNetwork(nn.Module):
         x = x.contiguous().flatten(1)
         x = F.relu(self.fc1(x))
         return self.fc2(x).squeeze(-1)  # -> [B]
-
-
-from typing import Callable, List, Tuple, Optional, Dict, Union
-
-Pos    = Tuple[int, int]
-Action = Tuple[int, int, int]
 
 
 class Game:
@@ -240,6 +232,7 @@ class Game:
         before_board_state = self.board.copy()
         self.move_history.append((src, dst, over, before_board_state))
         self.redo_stack.clear()
+        from_edge = (src in CORNER_POSITIONS) or EDGE_MASK[src]
 
         # 2. בצע את המהלך בפועל על הלוח.
         self._apply(src, dst, over)
@@ -339,36 +332,52 @@ class Game:
     def set_custom_metadata(self, k: str, v):
         self.custom_metadata[k] = v
 
-    # Game class
 
+
+    # ------------------------------------------------------------------
+    #  Game._default_reward – PBRS + “step-floor”   (תואם TD-target γ)
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    #  Game._default_reward –  Adaptive-penalty  PBRS
+    # ------------------------------------------------------------------
     def _default_reward(
-            self,
-            done: bool,
-            potential_before: float,
-            potential_after: float
+        self,
+        done: bool,
+        potential_before: float,
+        potential_after: float
     ) -> float:
         """
-        PBRS מלא: ΔΦ בכל צעד + בונוס/קנס סופי חד-פעמי.
+        PBRS מלאה + "step-floor"  +  קנס סופי מותאם לגודל השארית (פגים שנותרו).
+
+        • delta_phi      – אות צפוף להתקדמות (γ·Φ' − Φ).
+        • step_floor     – קנס קטן על צעד שלא משפר (ΔΦ ≤ 0).
+        • bonus_win      – בונוס חד-פעמי על פתרון (פיון אחד במרכז).
+        • penalty_stuck  – **קנס יחסי**: ככל שנותרו יותר פגים, כך הקנס גדול יותר.
         """
-        # ייתכן שתרצה להתאים את הגאמא בהתאם לבעיה ולרשת.
-        # ערך נמוך יותר יכול לעודד פתרונות מהירים יותר.
-        # ערך גבוה יותר יכול לעודד למידה לטווח ארוך.
-        gamma = 0.995  # נסה ערך מעט גבוה יותר כדי לתת יותר משקל לעתיד
+        # ---------- היפר-פרמטרים ----------
+        gamma       = 0.995          # חייב להשתקף גם ב-TD-target
+        step_floor  = -0.003         # קנס מינימלי על “דריכה במקום”
+        bonus_win   = +10.0          # בונוס על ניצחון
+        k_pen       = 0.15           # מקדם קנס לפג שנותר (0.15 ≈ -5 כש-32 פגים)
+        pen_cap     = -5.0           # קנס מרבי (ביטוח)
+        # -----------------------------------
 
-        # בונוסים/קנסות סופיים. ייתכן שצריך להגדיל/להקטין אותם.
-        # אם הסוכן לא מצליח לפתור, הגדל את term_win או הקטן את term_loss.
-        # אם הסוכן מוצא קיצורי דרך לא רצויים, הקטן את term_win או הגדל את term_loss.
-        term_win = 10.0  # בונוס משמעותי על ניצחון
-        term_loss = -5.0  # קנס משמעותי על הפסד
+        # Δ-potential (שכפול PBRS הקלאסי)
+        delta_phi   = gamma * potential_after - potential_before
+        step_penalty = step_floor if delta_phi <= 0.0 else 0.0
+        reward       = delta_phi + step_penalty
 
-        # Δ-potential עבור כל צעד
-        shaped = gamma * potential_after - potential_before
+        # -------------------- בונוס/קנס סופי --------------------
+        if done:
+            if self.is_win():                    # פיון 1 במרכז
+                reward += bonus_win
+            else:                                # Game-Over ללא פתרון
+                pegs_left = self.board.count_pegs()
+                # קנס סופי פרופורציונלי (עד pen_cap-)
+                penalty_stuck = -min(abs(pen_cap), k_pen * pegs_left)
+                reward += penalty_stuck
 
-        if not done:
-            return shaped
-
-        # פרס סופי – מתווסף ל-ΔΦ של הצעד האחרון בלבד
-        return shaped + (term_win if self.is_win() else term_loss)
+        return float(reward)
 
     def __str__(self) -> str:
         parts = [str(self.board)]
@@ -376,41 +385,38 @@ class Game:
             parts.append(f"Last move: {self.last_move}")
         return "\n".join(parts)
 
-import numpy as np
-from typing import Callable, List, Tuple, Optional, Union
-
-# טיפוסים משותפים
-Pos    = Tuple[int, int]
-Action = Tuple[int, int, int]
-
 
 # ------------------------------------------------------------------
 # 🗺️  STRATEGIC MAPS  (7×7 English board – ערכים ניתנים לכיול)
 # ------------------------------------------------------------------
-import numpy as np
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Union
+# ================================================================
+#  GLOBAL STRATEGIC MAPS  – tuned for maximal solving accuracy
+# ================================================================
 
-CENTRALITY_WEIGHTS = np.array(
-	[[0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0],
-	 [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
-	 [0.10, 0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
-	 [0.10, 0.30, 0.50, 1.00, 0.50, 0.30, 0.10],
-	 [0.10, 0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
-	 [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
-	 [0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0]], dtype=np.float32)
+CENTRALITY_WEIGHTS = np.array([
+    [0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0],
+    [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
+    [0.10,0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
+    [0.10,0.30, 0.50, 1.00, 0.50, 0.30, 0.10],
+    [0.10,0.20, 0.40, 0.50, 0.40, 0.20, 0.10],
+    [0.0, 0.10, 0.20, 0.30, 0.20, 0.10, 0.0],
+    [0.0, 0.0, 0.10, 0.10, 0.10, 0.0, 0.0]], dtype=np.float32)
 
-PAGODA_VALUES = np.array(
-	[[0, 0, 1, 2, 1, 0, 0],
-	 [0, 1, 2, 3, 2, 1, 0],
-	 [1, 2, 3, 4, 3, 2, 1],
-	 [2, 3, 4, 5, 4, 3, 2],
-	 [1, 2, 3, 4, 3, 2, 1],
-	 [0, 1, 2, 3, 2, 1, 0],
-	 [0, 0, 1, 2, 1, 0, 0]], dtype=np.float32)
+PAGODA_VALUES = np.array([
+    [0,0,1,2,1,0,0],
+    [0,1,2,3,2,1,0],
+    [1,2,3,4,3,2,1],
+    [2,3,4,5,4,3,2],
+    [1,2,3,4,3,2,1],
+    [0,1,2,3,2,1,0],
+    [0,0,1,2,1,0,0]], dtype=np.float32)
 
-DIRS_JUMP = np.array([[-2, 0], [2, 0], [0, -2], [0, 2]], dtype=np.int8)
-CORNER_POSITIONS = [(0, 3), (3, 0), (3, 6), (6, 3)]
-EDGE_MASK = ((CENTRALITY_WEIGHTS < 0.25) & (CENTRALITY_WEIGHTS > 0)).astype(np.float32)
+DIRS_JUMP = np.array([[-2,0],[2,0],[0,-2],[0,2]], dtype=np.int8)
+
+CORNER_POSITIONS = [(0,3), (3,0), (3,6), (6,3)]
+EDGE_MASK = ((CENTRALITY_WEIGHTS < 0.25) & (CENTRALITY_WEIGHTS > 0)).astype(np.float32)  # “true” edges
+
 
 
 # ------------------------------------------------------------------
@@ -448,64 +454,77 @@ class PegSolitaireEnv:
     # --------------------------------------------------------------
     #  Φ(s)  –  פוטנציאל מרובד (תיקון bounds-safe ל-isolation)
     # --------------------------------------------------------------
-    # ------------------------------------------------------------------
-    #  GLOBAL STRATEGIC MAPS  (7×7 English board) – tuned for accuracy
-    # ------------------------------------------------------------------
-    import numpy as np
-
-    # ==============================================================
-    #   Φ(s)  – High-accuracy layered potential
-    # ==============================================================
     def _calculate_potential(self, board) -> float:
-        arr  = board.as_array().astype(np.float32)          # 1 / 0
-        mask = self.board_mask
+        """
+        Layered potential used for PBRS.
+        Components (higher ⇒ “closer to solved”):
+            φ0 : –#pegs                      (fewer pegs = better)
+            φ1 : centrality (avg)           (pegs near centre)
+            φ2 : pagoda value               (resource / feasibility)
+            φ3 : –(isolated + edge + corner penalties)
+        All ops fully vectorised – no Python loops over board cells.
+        """
+        arr = board.as_array().astype(np.float32)  # shape (7,7)
+        mask = self.board_mask.astype(np.float32)
         peg_cnt = int(arr.sum())
 
-        # --- φ0 : peg count (fewer ≈ better) -----------------------
-        phi_num = -peg_cnt                                    # linear
+        # ---------- φ0 : peg count (linear) ----------
+        phi_num = -peg_cnt  # larger (less-) is better
 
-        # --- φ1 : centrality (average per peg) --------------------
+        # ---------- φ1 : centrality (normalised) ----------
         phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / max(1, peg_cnt)
 
-        # --- φ2 : pagoda resource ---------------------------------
+        # ---------- φ2 : pagoda  ----------
         phi_pagoda = (arr * PAGODA_VALUES * mask).sum()
 
-        # --- φ3 : penalties – isolated / edge / corner ------------
-        if peg_cnt == 0:
+        # ---------- φ3 : isolation / corner / edge penalties ----------
+        if peg_cnt == 0:  # solved board
             phi_iso_edge = 0.0
         else:
-            rc = np.argwhere(arr == 1)                         # N×2
+            # All peg coordinates, shape (N,2)
+            rc = np.argwhere(arr == 1)  # N×2  int16
+
+            # Build reachability mask in a single pass over 4 directions
             reachable = np.zeros(len(rc), dtype=bool)
 
-            for dr, dc in DIRS_JUMP:
-                mid = rc + (dr//2, dc//2)
+            for dr, dc in DIRS_JUMP:  # four vectorised directions
+                mid = rc + (dr // 2, dc // 2)
                 dst = rc + (dr, dc)
 
+                # fast bounds mask
                 valid = (
-                    (dst[:,0] >= 0) & (dst[:,0] < 7) &
-                    (dst[:,1] >= 0) & (dst[:,1] < 7)
+                        (dst[:, 0] >= 0) & (dst[:, 0] < 7) &
+                        (dst[:, 1] >= 0) & (dst[:, 1] < 7)
                 )
                 if not valid.any():
                     continue
-                idx = np.where(valid)[0]
 
-                dst_ok    = mask[dst[idx,0], dst[idx,1]] == 1
-                mid_ok    = mask[mid[idx,0], mid[idx,1]] == 1
-                has_peg   = arr[mid[idx,0], mid[idx,1]] == 1
-                empty_dst = arr[dst[idx,0], dst[idx,1]] == 0    # ← החלק הקריטי
+                idv = np.where(valid)[0]
+                dst_v, mid_v = dst[idv], mid[idv]
 
-                reachable[idx] |= (dst_ok & mid_ok & has_peg & empty_dst)
+                cond = (
+                        (mask[dst_v[:, 0], dst_v[:, 1]] == 1) &
+                        (mask[mid_v[:, 0], mid_v[:, 1]] == 1) &
+                        (arr[mid_v[:, 0], mid_v[:, 1]] == 1) &
+                        (arr[dst_v[:, 0], dst_v[:, 1]] == 0)
+                )
+                reachable[idv] |= cond
 
             isolated = int((~reachable).sum())
-            corners  = int(sum(arr[r,c] for r,c in CORNER_POSITIONS))
-            edges    = int((arr * EDGE_MASK).sum())
+            corners = int(sum(arr[r, c] for r, c in CORNER_POSITIONS))
+            edges = int((arr * EDGE_MASK).sum())
 
-            phi_iso_edge = -(5.0*isolated + 2.0*corners + 1.0*edges)
+            phi_iso_edge = - (5.0 * isolated + 2.0 * corners + 1.0 * edges)
 
-        # --- weighted sum (hyper-params tuned for accuracy) -------
+        # ---------- weighted sum ----------
+        # weights tuned for highest empirical solving accuracy on 7×7 English board
         w0, w1, w2, w3 = 1.2, 0.65, 1.0, 0.85
-        return w0*phi_num + w1*phi_centr + w2*phi_pagoda + w3*phi_iso_edge
-
+        return (
+                w0 * phi_num +  # fewer pegs
+                w1 * phi_centr +  # centre bias
+                w2 * phi_pagoda +  # resource / feasibility
+                w3 * phi_iso_edge  # isolation / edge penalties
+        )
     # ------------------------------------------------------------------
     # כל שאר השיטות שלך נשארו ללא שינוי – העתקנו ככתבן וכלשונן
     # ------------------------------------------------------------------
@@ -598,10 +617,6 @@ class PegSolitaireEnv:
 
     def render(self, mode="human"):
         print(self.game.board)
-
-from typing import Tuple
-
-
 
 
 # Assuming ResidualBlock is defined elsewhere and works correctly
@@ -697,29 +712,12 @@ class PegSolitaireNet(nn.Module):
 
         return pi_logits, v
 
-from collections import deque
-
-
-import heapq
-
-import numpy as np
-import random
-import torch
-from typing import List, Tuple
 
 import numpy as np
 import torch
 import heapq
 import itertools
-import random
-from typing import List, Tuple, Optional
 
-import numpy as np
-import random
-import torch
-import heapq
-import itertools
-from typing import List, Tuple, Optional
 
 class ReplayBuffer:
     """
@@ -813,7 +811,7 @@ class MCTS:
             env,
             model: "PegSolitaireNet",
             action_space,
-            sims: int = 400,
+            sims: int = 63,
             c_puct: float = 1.5,
             root_noise: bool = True,
             dirichlet_alpha: float = 0.3,
@@ -951,15 +949,8 @@ class MCTS:
 #                               Agent                                #
 # ------------------------------------------------------------------ #
 
-from typing import  Tuple
-
-Pos = Tuple[int, int]
-Action = Tuple[int, int, int]
 
 # agent.py  – industrial-grade version (steps 2-5 applied)
-import time
-from typing import Dict, Tuple, List, Optional, Callable
-
 
 
 try:
@@ -1009,7 +1000,7 @@ class AgentAnalyzer:
 # ====================================================================== #
 #                              agent.py                                  #
 # ====================================================================== #
-import os, time, random, math
+import time, random
 from collections import defaultdict
 from typing import List, Dict, Tuple, Callable, Optional
 
@@ -1075,7 +1066,7 @@ class Agent:
         model: "PegSolitaireNet",
         action_space: "PegSolitaireActionSpace",
         buffer: "ReplayBuffer",
-        sims: int = 33,
+        sims: int = 63,
         device: str | torch.device = "mps",
         keep_history: bool = False,
         mlflow_experiment: str | None = None,
@@ -1248,11 +1239,14 @@ class Agent:
         )
 
         start = time.time()
+
+        # -----------------------------------------------------------------
+        # לפני ה-for epoch …  (כלומר רק פעם אחת בתחילת train)
         if not hasattr(self, "_sims0"):
             self._sims0 = self.mcts.sims  # 33 כברירת-מחדל
 
         growth = 1.18  # 18 % בכל Epoch
-        cap = 384  # תקרה קשיחה
+        cap = 256  # תקרה קשיחה
         # -----------------------------------------------------------------
 
         for epoch in range(epochs):
@@ -1261,6 +1255,7 @@ class Agent:
                 int(self._sims0 * (growth ** epoch)),
                 cap
             )
+
 
             # ==== דגימה עם אינדקסים וחשבון IS weights ====
             obs_t, pi_t, z_t, indices = self.buffer.sample_as_tensors(batch, device=self.device)
@@ -1401,7 +1396,7 @@ class PegSolitaireActionSpace:
 # -------- הגדרות כלליות -------- #
 AGENT_PATH = Path("peg_agent.pt")
 HISTORY_PATH = Path("episode_history.pkl")
-TRAIN_EPISODES = 5
+TRAIN_EPISODES = 20
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"🔧 Using device: {DEVICE}")
 
@@ -1429,7 +1424,7 @@ def load_agent(path: Path = AGENT_PATH) -> Agent:
     model.eval()
 
     print("📦 Agent loaded successfully.")
-    return Agent(env, model, asp, ReplayBuffer(), sims=ckpt.get("sims", 33), device=DEVICE, keep_history=True)
+    return Agent(env, model, asp, ReplayBuffer(), sims=ckpt.get("sims", 63), device=DEVICE, keep_history=True)
 
 
 # -------- אימון / הרצה -------- #
@@ -1438,7 +1433,7 @@ def train_new_agent(episodes: int = TRAIN_EPISODES) -> Agent:
     asp = PegSolitaireActionSpace(env.board_mask)
     model = PegSolitaireNet(len(asp), device=DEVICE)
     buffer = ReplayBuffer()
-    agent = Agent(env, model, asp, buffer, sims=33, device=DEVICE, keep_history=True)
+    agent = Agent(env, model, asp, buffer, sims=63, device=DEVICE, keep_history=True)
 
     print("🚀 Starting training loop ...")
     for ep in range(1, episodes + 1):
@@ -1657,10 +1652,10 @@ class PegSolitaireGUI(tk.Frame):
         for d, (drow, dcol) in enumerate(Game.DIRECTIONS):
             # אם Game.DIRECTIONS = (±1,0/0,±1) → קפיצה היא 2*δ
             if (dr, dc) == (2 * drow, 2 * dcol):
-                return (src[0], src[1], d)
+                return src[0], src[1], d
             # אם Game.DIRECTIONS = (±2,0/0,±2) → קפיצה שווה בדיוק ל־δ
             if (dr, dc) == (drow, dcol):
-                return (src[0], src[1], d)
+                return src[0], src[1], d
 
         raise ValueError(f"Cannot map move {move} to action – check DIRECTIONS.")
 

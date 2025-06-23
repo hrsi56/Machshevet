@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import pickle
 import tkinter as tk
 from pathlib import Path
@@ -340,48 +341,43 @@ class Game:
     #  Game._default_reward –  Adaptive-penalty  PBRS
     # ------------------------------------------------------------------
     def _default_reward(
-            self,
-            done: bool,
-            potential_before: float,
-            potential_after: float
+        self,
+        done: bool,
+        potential_before: float,
+        potential_after: float
     ) -> float:
         """
-        Reward Shaping (PBRS) - גרסה מוקשחת:
+        PBRS מלאה + "step-floor"  +  קנס סופי מותאם לגודל השארית (פגים שנותרו).
 
-        ΔΦ        = γ·Φ(s') − Φ(s)
-        step_floor = קנס קבוע אם ΔΦ≤0  (מונע ‘דריכה במקום’)
-        bonus_win  = בונוס חד-פעמי על פתרון מלא
-        penalty_*  = קנס סופי פרופורציונלי לכמות הפגים שנותרו
-
-        הערה: חשוב לשמור על אותו γ הן כאן והן ב-TD-target של הרשת.
+        • delta_phi      – אות צפוף להתקדמות (γ·Φ' − Φ).
+        • step_floor     – קנס קטן על צעד שלא משפר (ΔΦ ≤ 0).
+        • bonus_win      – בונוס חד-פעמי על פתרון (פיון אחד במרכז).
+        • penalty_stuck  – **קנס יחסי**: ככל שנותרו יותר פגים, כך הקנס גדול יותר.
         """
+        # ---------- היפר-פרמטרים ----------
+        gamma       = 0.995          # חייב להשתקף גם ב-TD-target
+        step_floor  = -0.003         # קנס מינימלי על “דריכה במקום”
+        bonus_win   = +10.0          # בונוס על ניצחון
+        k_pen       = 0.15           # מקדם קנס לפג שנותר (0.15 ≈ -5 כש-32 פגים)
+        pen_cap     = -5.0           # קנס מרבי (ביטוח)
+        # -----------------------------------
 
-        # ---------- היפר-פרמטרים (קל לכוונון) ----------
-        gamma = 0.995  # discount לשינוי הפוטנציאל
-        step_floor = -0.02  # קנס על צעד שלא שיפר
-        bonus_win = +20.0  # פרס חד-פעמי כשנשאר פג יחיד במרכז
-        base_penalty = -3.0  # קנס בסיסי על Game-Over
-        k_pen = 1.0  # תוספת קנס על כל פג נוסף
-        # ------------------------------------------------
+        # Δ-potential (שכפול PBRS הקלאסי)
+        delta_phi   = gamma * potential_after - potential_before
+        step_penalty = step_floor if delta_phi <= 0.0 else 0.0
+        reward       = delta_phi + step_penalty
 
-        # Δ-potential
-        delta_phi = gamma * potential_after - potential_before
+        # -------------------- בונוס/קנס סופי --------------------
+        if done:
+            if self.is_win():                    # פיון 1 במרכז
+                reward += bonus_win
+            else:                                # Game-Over ללא פתרון
+                pegs_left = self.board.count_pegs()
+                # קנס סופי פרופורציונלי (עד pen_cap-)
+                penalty_stuck = -min(abs(pen_cap), k_pen * pegs_left)
+                reward += penalty_stuck
 
-        # “צעד נטול-התקדמות” ⇒ קנס קטן
-        reward_step = delta_phi if delta_phi > 0 else step_floor
-
-        # ----------------- טפל במצב סופי -----------------
-        if not done:
-            return float(reward_step)
-
-        # משחק הסתיים
-        if self.is_win():  # פיון יחיד במרכז
-            return float(reward_step + bonus_win)
-
-        # Game-Over ללא פתרון → קנס יחסי לגודל השארית
-        pegs_left = self.board.count_pegs()
-        penalty_stuck = base_penalty - k_pen * (pegs_left - 1)
-        return float(reward_step + penalty_stuck)
+        return float(reward)
 
     def __str__(self) -> str:
         parts = [str(self.board)]
@@ -460,44 +456,42 @@ class PegSolitaireEnv:
     # --------------------------------------------------------------
     def _calculate_potential(self, board) -> float:
         """
-        מחשב פונקציית פוטנציאל משולבת לצורך PBRS (Potential-Based Reward Shaping).
-        הפלט שווה ערך ל"מד התקדמות" של מצב הלוח.
-
-        מרכיבי הפוטנציאל:
-            φ0 : מספר הפגים (ככל שפחות – טוב יותר)
-            φ1 : קירבה למרכז (ממוצע משוקלל של מיקום הפגים)
-            φ2 : ערך Pagoda – מדד להתכנות פתרון
-            φ3 : ענישה על פגים מבודדים, בקצוות ובפינות
+        Layered potential used for PBRS.
+        Components (higher ⇒ “closer to solved”):
+            φ0 : –#pegs                      (fewer pegs = better)
+            φ1 : centrality (avg)           (pegs near centre)
+            φ2 : pagoda value               (resource / feasibility)
+            φ3 : –(isolated + edge + corner penalties)
+        All ops fully vectorised – no Python loops over board cells.
         """
-        arr = board.as_array().astype(np.float32)  # (7, 7)
+        arr = board.as_array().astype(np.float32)  # shape (7,7)
         mask = self.board_mask.astype(np.float32)
         peg_cnt = int(arr.sum())
 
-        # ---------- φ0 : peg count (שלילי) ----------
-        phi_num = -peg_cnt  # פחות פגים → יותר טוב
+        # ---------- φ0 : peg count (linear) ----------
+        phi_num = -peg_cnt  # larger (less-) is better
 
-        # ---------- φ1 : centrality ----------
-        if peg_cnt == 0:
-            phi_centr = 0.0
-        else:
-            phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / (peg_cnt + 1e-5)
+        # ---------- φ1 : centrality (normalised) ----------
+        phi_centr = (arr * CENTRALITY_WEIGHTS * mask).sum() / max(1, peg_cnt)
 
-        # ---------- φ2 : pagoda value ----------
+        # ---------- φ2 : pagoda  ----------
         phi_pagoda = (arr * PAGODA_VALUES * mask).sum()
 
-        # ---------- φ3 : isolation, corner & edge penalties ----------
-        if peg_cnt == 0:
+        # ---------- φ3 : isolation / corner / edge penalties ----------
+        if peg_cnt == 0:  # solved board
             phi_iso_edge = 0.0
         else:
-            # מיקומי כל הפגים על הלוח
-            rc = np.argwhere(arr == 1)  # (N, 2)
+            # All peg coordinates, shape (N,2)
+            rc = np.argwhere(arr == 1)  # N×2  int16
 
+            # Build reachability mask in a single pass over 4 directions
             reachable = np.zeros(len(rc), dtype=bool)
 
-            for dr, dc in DIRS_JUMP:  # ארבעת כיווני הקפיצה
+            for dr, dc in DIRS_JUMP:  # four vectorised directions
                 mid = rc + (dr // 2, dc // 2)
                 dst = rc + (dr, dc)
 
+                # fast bounds mask
                 valid = (
                         (dst[:, 0] >= 0) & (dst[:, 0] < 7) &
                         (dst[:, 1] >= 0) & (dst[:, 1] < 7)
@@ -522,14 +516,16 @@ class PegSolitaireEnv:
 
             phi_iso_edge = - (5.0 * isolated + 2.0 * corners + 1.0 * edges)
 
-        # ---------- שקלול משוקלל ----------
-        w0, w1, w2, w3 = 1.2, 0.65, 1.0, 0.85  # ניתן לכוונן
-        total_phi = (
-                w0 * phi_num +
-                w1 * phi_centr +
-                w2 * phi_pagoda +
-                w3 * phi_iso_edge
+        # ---------- weighted sum ----------
+        # weights tuned for highest empirical solving accuracy on 7×7 English board
+        w0, w1, w2, w3 = 1.2, 0.65, 1.0, 0.85
+        return (
+                w0 * phi_num +  # fewer pegs
+                w1 * phi_centr +  # centre bias
+                w2 * phi_pagoda +  # resource / feasibility
+                w3 * phi_iso_edge  # isolation / edge penalties
         )
+
 
         # ---------- Debug output (אופציונלי) ----------
         if getattr(self, "debug_potential", False):
@@ -1082,6 +1078,14 @@ class AgentAnalyzer:
             "top_freq": most_common[1],
         }
 
+
+def canonical_hash(arr: np.ndarray) -> str:
+    """החזרת hash ייחודי ללוח, בלתי תלוי בסימטריית 8-הדרכים."""
+    variants = [np.rot90(arr, k=r) for r in range(4)]
+    variants += [np.fliplr(v) for v in variants]          # 8 וריאציות
+    best = min(v.tobytes() for v in variants)             # 'סדר אטום'
+    return hashlib.sha1(best).hexdigest()
+
 # ---------------------------------------------------------------------- #
 # ========================================================= #
 #                           Agent                           #
@@ -1150,94 +1154,96 @@ class Agent:
         return new_π
 
     # ------------------ self-play episode ------------------ #
-    def self_play_episode(
-            self,
-            augment: bool = True,
-            gamma: float = 0.995,
-    ) -> None:
-        """ AlphaZero-style self-play: אוסף (state, π, G_t) """
+    def self_play_episode(self, augment: bool = True) -> None:
         obs, _ = self.env.reset()
         done = False
         moves = 0
-        states, policies, rewards = [], [], []
+        total_reward = 0.0
+        states, policies = [], []
+        boards_seen: list[np.ndarray] = []  # ←–––– ① NEW
 
-        # ---------- ניטור ----------
         self.analyzer.reset()
-        ep_rec = {"moves": [], "reward": 0.0, "solved": False, "moves_len": 0}
+        episode_record = {
+            "moves": [],
+            "reward": 0.0,
+            "solved": False,
+            "moves_len": 0,
+        }
 
-        # ---------- לולאה ----------
         while not done:
             moves += 1
             tau = 1.0 if moves < 10 else 0.05
 
-            # MCTS → π
+            # Compute policy using MCTS
             π = self.mcts.run(obs, tau=tau)
 
-            # מסיכת פעולות חוקיות
-            legal = self.env.get_legal_actions()
-            legal_idx = [self.action_space.to_index(a) for a in legal]
-            π_mask = π[legal_idx]
-            π_mask /= π_mask.sum() + 1e-8
-            act_idx = int(np.random.choice(legal_idx, p=π_mask))
-            action = self.action_space.from_index(act_idx)
+            # Mask policy probabilities based on legal actions
+            legal_actions = self.env.get_legal_actions()
+            legal_indices = [self.action_space.to_index(a) for a in legal_actions]
+            π_masked = π[legal_indices]
+            π_masked /= np.sum(π_masked) + 1e-8
 
-            # לוג + איסוף
+            # Choose action probabilistically based on masked policy
+            chosen_index = np.random.choice(legal_indices, p=π_masked)
+            action = self.action_space.from_index(chosen_index)
+
+            # Store state and policy for replay buffer
             states.append(obs.copy())
             policies.append(π.copy())
+
+            # Analyzer logging
             with torch.no_grad():
-                v_est = self.model(
-                    torch.tensor(obs, dtype=torch.float32, device=self.device)
-                    .permute(2, 0, 1).unsqueeze(0)
-                )[1]
-            self.analyzer.log(obs, act_idx, v_est.item(), legal_idx)
+                tensor_obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
+                tensor_obs = tensor_obs.permute(2, 0, 1).unsqueeze(0).contiguous()
+                _, v_est = self.model(tensor_obs)
 
-            # צעד בסביבה
-            obs, r, done, _ = self.env.step(action)
-            rewards.append(float(r))
-            ep_rec["moves"].append(action)
+            self.analyzer.log(obs, chosen_index, v_est.item(), legal_indices)
 
-        # ---------- סיכום ----------
-        ep_rec.update(
-            reward=float(np.sum(rewards)),
-            solved=self.env.game.is_win(),
-            moves_len=moves,
-        )
+            # Execute chosen action
+            obs, reward, done, _ = self.env.step(action)
+            total_reward = reward
+            episode_record["moves"].append(action)
+            boards_seen.append(self.env.game.board.as_array().copy())  # ←––– ②
+
+
+        # Record the episode outcome
+        episode_record.update({
+            "reward": total_reward,
+            "solved": total_reward > 0,
+            "moves_len": moves,
+        })
+
+        if episode_record["solved"]:
+            board_hashes = {canonical_hash(b) for b in boards_seen}  # ←––– ③
+            if not hasattr(self, "success_catalog"):
+                self.success_catalog: list[set[str]] = []
+            self.success_catalog.append(board_hashes)
+
         if self.keep_history:
-            ep_rec["analyzer"] = self.analyzer.summary()
-            self.episodes.append(ep_rec)
+            episode_record["analyzer"] = self.analyzer.summary()
+            self.episodes.append(episode_record)
 
-        # סטטיסטיקה
+        # Update stats
         self.stats["episodes"] += 1
         self.stats["avg_moves"] = (
                 (self.stats["avg_moves"] * (self.stats["episodes"] - 1) + moves)
                 / self.stats["episodes"]
         )
-        if ep_rec["solved"]:
+        if total_reward > 0:
             self.stats["success"] += 1
 
-        # ---------- חישוב G_t ----------
-        returns = np.zeros(len(rewards), dtype=np.float32)
-        G = 0.0
-        for t in reversed(range(len(rewards))):
-            G = rewards[t] + gamma * G
-            returns[t] = G
-
-        # ✅ תמריץ נוסף קל אם הצלחנו (שילוב Reward)
-        if ep_rec["solved"]:
-            returns += 5.0  # בונוס מתון, אפשר גם 3.0 או 10.0 לפי מה שעובד טוב
-
-        # ---------- כתיבה לבאפר ----------
-        for s, π, G in zip(states, policies, returns):
+        # Push states, policies, and rewards into the buffer
+        for state, policy in zip(states, policies):
             if augment:
                 for rot in range(4):
                     for flip in (False, True):
-                        s_aug = np.rot90(s, k=rot, axes=(0, 1))
+                        augmented_state = np.rot90(state, k=rot, axes=(0, 1))
                         if flip:
-                            s_aug = np.flip(s_aug, axis=1)
-                        π_aug = self._transform_policy(π, rot, flip)
-                        self.buffer.push((s_aug, π_aug, G))
+                            augmented_state = np.flip(augmented_state, axis=1)
+                        augmented_policy = self._transform_policy(policy, rot, flip)
+                        self.buffer.push((augmented_state, augmented_policy, total_reward))
             else:
-                self.buffer.push((s, π, G))
+                self.buffer.push((state, policy, total_reward))
 
     # ------------------ checkpoint / eval ------------------ #
     def _save_ckpt(self, tag: str):
@@ -1351,6 +1357,19 @@ class Agent:
             mlflow.log_metric("train_time", time.time() - t0, step=self._global_step)
             mlflow.end_run()
 
+    def diversity_score(self) -> float:
+        """
+        היחס בין מספר *מסלולי-ניצחון ייחודיים* (Hash-Set) לבין
+        מספר כל האפיזודות המוצלחות.
+        1.00  →   כל הצלחה הייתה ייחודית לחלוטין
+        0.25  →   בממוצע כל פתרון חזר 4-פעמים
+        0.00  →   לא היו עדיין הצלחות
+        """
+        if not hasattr(self, "success_catalog") or len(self.success_catalog) == 0:
+            return 0.0
+        unique_paths = {frozenset(p) for p in self.success_catalog}
+        return len(unique_paths) / len(self.success_catalog)
+
             # ------------------------------------------------------------------ #
 #                        Action-Space helper                         #
 # ------------------------------------------------------------------ #
@@ -1416,7 +1435,7 @@ class PegSolitaireActionSpace:
 # -------- הגדרות כלליות -------- #
 AGENT_PATH = Path("peg_agent.pt")
 HISTORY_PATH = Path("episode_history.pkl")
-TRAIN_EPISODES = 10
+TRAIN_EPISODES = 400
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"🔧 Using device: {DEVICE}")
 
@@ -1487,6 +1506,8 @@ def train_new_agent(
                 solv=s["success"], eps=s["episodes"],
                 mu=s["avg_moves"]
             ))
+            div = agent.diversity_score()
+            print(f" ↳ diversity={div:.2f}")
 
     # -- save -----------------------------------------------------------------
     save_agent(agent)
