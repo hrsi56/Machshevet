@@ -42,7 +42,7 @@ def fast_canonical_lookup(board, table):
 #  חלק 1: המנוע (Hybrid Solver)
 # ==========================================
 class PegSolitaireSolver:
-	MEMORY_FILE = "Play/solitaire_pro_brain.pkl"
+	MEMORY_FILE = "solitaire_pro_brain.pkl"
 
 	def __init__(self):
 		self.r_c_to_bit = {}
