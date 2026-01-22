@@ -1,67 +1,77 @@
 # Machshevet (Peg Solitaire) Solver & Analytics 🧠
 
-> **An optimized Hybrid-BFS Oracle comprising ~3 million unique canonical states.**
+> **A high-performance Hybrid-BFS Oracle comprising ~1.6 million unique winning states.**
 
-This project implements a high-performance solver and analysis tool for the classic **Peg Solitaire (Standard English Board)**. It features a real-time "Survival Funnel" dashboard that visualizes the exact number of winning paths available to the player at any given moment.
+This project implements an optimized solver and analysis tool for the classic **Peg Solitaire (Standard English Board)**. It features a real-time "Survival Funnel" dashboard that visualizes the exact number of winning paths available to the player at any given moment.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Algorithm](https://img.shields.io/badge/Algorithm-Hybrid_Forward_Backward_BFS-purple)
-![State Space](https://img.shields.io/badge/States-~3M_Canonical-success)
+![Acceleration](https://img.shields.io/badge/Acceleration-Numba_JIT-orange)
+![State Space](https://img.shields.io/badge/Winning_States-~1.6M_Canonical-success)
 
 ## 🚀 The Algorithmic Journey
 
-This repository documents a journey of optimization, moving from "Heavy AI" to precise mathematical graph theory.
+This repository documents a journey of optimization, moving from complex Reinforcement Learning attempts to precise mathematical graph theory and High-Performance Computing (HPC).
 
-### Phase 1: The AI Attempt (Failed)
-Initially, we implemented **AlphaZero** (Deep Reinforcement Learning with MCTS).
-* **Lesson Learned:** For a deterministic puzzle with a finite state space (~33 bits), Neural Networks are overkill. They approximate the solution, whereas we needed exactness. Also, the reward signal is too sparse for efficient training.
+### Phase 1: The AI Attempt (Deprecated)
+Initially, we implemented **AlphaZero** (Deep Reinforcement Learning with MCTS) and PBRS (Potential-Based Reward Shaping) using "Pagoda functions."
+* **The Reality:** For a deterministic puzzle with a finite state space (~33 bits), Neural Networks were overkill. The reward signal in Peg Solitaire is extremely sparse (you only win at the very end), making efficient training incredibly difficult despite complex reward shaping.
+* **Outcome:** The complexity was high, and convergence was slow or non-existent. These attempts are archived in `WontWork/`.
 
-### Phase 2: Naive Reverse BFS (Inefficient)
-We switched to a **Reverse BFS** approach—starting from the single winning peg and working backwards.
-* **The Problem:** The algorithm found **13+ million** solvable states.
-* **Why:** It mapped the "Universal Solvable Space"—including board configurations that are mathematically impossible to reach from the standard starting game.
+### Phase 2: Reverse BFS (Inefficient)
+We switched to a **Reverse BFS** approach—starting from the single winning peg and working backwards to find all possible winning configurations.
+* **The Problem:** The algorithm found millions of "solvable" states that were actually unreachable from a standard starting board. It mapped the "Universal Solvable Space" rather than the specific game graph.
+* **Performance:** Python-based implementations (`solver.py`, `solver_WithTarget.py`) were logically correct but extremely slow, taking hours to execute due to the massive state space and Python's interpreter overhead.
 
-### Phase 3: The Hybrid Solution (Current) ✅
-To solve *exactly* the standard game, we implemented a **Forward-Pruned Reverse Solver**:
-1.  **Forward Pass:** Map all states reachable from the start (The "Reachable Universe").
-2.  **Backward Pass:** Map winning states starting from the end, **but strictly intersecting** with the Reachable Universe.
-* **Result:** The search space collapsed from 13M to exactly **~3 million** valid canonical states.
+### Phase 3: The Hybrid HPC Solution (Current) ✅
+To solve the game efficiently and exactly, we implemented a **Hybrid Forward-Pruned Reverse Solver** accelerated with **Numba**:
+
+1.  **Forward Pass (Reachability):** We map the entire "Reachable Universe" starting from the standard board.
+    * *Result:* ~23.5 Million unique states reachable from the start.
+2.  **Backward Pass (Winning Paths):** We perform a Reverse BFS from the winning state, but **only keep states that exist in the Reachable Universe**.
+    * *Result:* The database is pruned down to exactly **~1,679,072** valid, canonical winning states.
+3.  **Hardware Acceleration:** All bitwise operations and symmetry reductions are compiled to machine code using `numba.njit`.
 
 ## 🛠️ Technical Architecture
 
 The engine runs purely on the CPU using highly optimized techniques:
 
-* **Hybrid Search Strategy:** Combines reachability analysis with reverse solving to eliminate unreachable states.
-* **Bitboards:** The board is represented as a single 64-bit integer. Move validation and application are bitwise operations ($O(1)$).
-* **Symmetry Pruning:** Every board state is normalized to its "Canonical Form" (minimum value of 8 rotations/reflections), reducing memory usage by factor of ~8.
-* **O(1) Lookup:** During gameplay, the AI checks a hash map. If the current state exists in the map, it is a guaranteed win.
+* **Bitboards:** The board is represented as a single 64-bit integer. Move validation and application are $O(1)$ bitwise operations.
+* **Symmetry Pruning (D4 Group):** Every board state is normalized to its "Canonical Form" (minimum integer value of 8 rotations/reflections), drastically reducing the memory footprint.
+* **Hybrid Logic:** By intersecting the "Reachable Set" with the "Reverse Search," we eliminate mathematically impossible configurations.
+* **JIT Compilation:** The core solver (`Solver_Numba.py`) uses Numba to bypass Python's Global Interpreter Lock (GIL) and overhead, achieving C-level performance.
 
 ## 📉 The "Survival Funnel"
 
-The UI features a unique analytics graph:
-* **Start:** Shows thousands of winning options.
+The GUI features a unique analytics graph:
+* **Start:** Shows the total number of winning paths (Survival Score).
 * **Mid-Game:** The graph creates a "funnel" shape as the decision space narrows.
-* **Dead End:** If the player makes a fatal mistake, the graph flatlines to **Zero** instantly, providing immediate feedback.
+* **Dead End:** If the player makes a fatal mistake, the graph flatlines to **Zero** instantly, providing immediate feedback even before the game is physically over.
 
 ## 📂 Repository Structure
 
-### ✅ The Production Engine
-* **`solver.py`**: The main executable. Contains the Hybrid Engine, Bitboard logic, and Tkinter GUI.
-* **`solitaire_standard_brain.pkl`**: (Generated on first run) The optimized "brain" file containing the map of ~3M winning states.
+### ⚡ Production Engine
+* **`Solver_Numba.py` (The Solution)**
+    * The highly optimized generator script.
+    * Uses `numba` to generate the complete `solitaire_lookup_table.pkl` database (~1.6M states) in **under 3 minutes**.
+* **`solver.py`**
+    * The main GUI application (Tkinter).
+    * Loads the brain file generated by `Solver_Numba.py` to provide real-time analytics.
+    * *Note:* Contains a slower, pure-Python implementation of the training logic as a fallback/reference.
 
-### 🧪 The Research Archive (`/WontWork`)
-A collection of previous attempts, kept for educational purposes and documentation of the development process.
-* **`MCTS.py` / `NET.py` / `trainer.py`**: The deprecated AlphaZero implementation.
-* **`Legacy Solvers`**: Earlier brute-force attempts.
+### 🧪 Research & Deprecated (`WontWork/`)
+Archived attempts at solving the game using Deep Learning and pure Python BFS.
+* **`MCTS.py`, `NET.py`, `V2_51.py`**: AlphaZero/GNN implementations.
+* **`solver_WithTarget.py`**: A pure Python implementation of the hybrid logic (correct but slow).
 
 ## ⚡ Performance Benchmarks
 
-| Metric | Naive Reverse BFS | **Hybrid Forward-Backward (Current)** |
+| Metric | Pure Python BFS (`solver.py`) | **Numba Hybrid (`Solver_Numba.py`)** |
 | :--- | :--- | :--- |
-| **Total States Mapped** | > 13,000,000 | **~2,900,000** |
-| **Logic** | Universal Solvability | **Standard Game Solvability** |
-| **Training Time** | ~5-10 Minutes | **~30 Seconds** |
-| **Inference Time** | Instant | **Instant** |
+| **Total Reachable States** | ~23,475,688 | **~23,475,688** |
+| **Final Winning States** | ~1,679,072 | **1,679,072** |
+| **Execution Time** | Hours (Never Finished) | **~160 Seconds** |
+| **Logic** | Valid | **Valid & Optimized** |
 
 ## 🎮 How to Run
 
@@ -71,13 +81,25 @@ A collection of previous attempts, kept for educational purposes and documentati
     cd machshevet-solver
     ```
 
-2.  **Run the application:**
+2.  **Install Dependencies:**
+    ```bash
+    pip install numpy numba
+    ```
+
+3.  **Generate the Brain (One-time setup):**
+    Run the Numba optimizer to generate the lookup table.
+    ```bash
+    python Solver_Numba.py
+    ```
+    *Output: `solitaire_lookup_table.pkl`*
+
+4.  **Run the Game:**
+    Ensure the generated `.pkl` file is in the same directory (rename it to `solitaire_pro_brain.pkl` if the GUI expects that name, or update the GUI code).
     ```bash
     python solver.py
     ```
-    *Note: On the first run, the system will perform the "Hybrid Training" process to map the game graph. This takes about 30-40 seconds.*
 
-3.  **Controls:**
+5.  **Controls:**
     * **Left Click:** Move peg.
     * **Auto Solve:** Watch the AI execute a perfect solution from your current state.
     * **Undo:** Revert move (visualize how the "Funnel" recovers).
