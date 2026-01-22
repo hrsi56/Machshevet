@@ -10,6 +10,8 @@ Most Peg Solitaire solvers are simple recursive backtracking scripts that find *
 
 This project is a mathematical "Oracle" for the Standard English Board (33 holes). It doesn't just "solve" the game; it maps the entire universe of valid gameplay. It knows exactly how many winning paths exist from your current state, and it knows the moment you've made a fatal mistake—often 15 moves before the game actually ends.
 
+you can play it on https://hrsi56.pythonanywhere.com
+
 ---
 
 ##  The Story of Failure (And How We Fixed It)
@@ -58,3 +60,6 @@ The GUI includes a real-time analytics graph that visualizes your mortality in t
 * **The Funnel:** As you play, you see the number of possible winning paths dropping.
 * **The Flatline:** If you make a move that leads to a dead end, the graph hits **Zero** instantly. You might still have valid moves left to play, but the Oracle knows you are already dead.
 
+
+
+you can play it on https://hrsi56.pythonanywhere.com
