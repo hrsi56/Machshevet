@@ -1,50 +1,86 @@
-# Machshevet (Peg Solitaire) Solver & Analysis 
+# Machshevet (Peg Solitaire) Solver & Analytics 🧠
 
-This repository documents the journey of solving the classic **Peg Solitaire (English Board)** game. It represents a pivot from complex Deep Reinforcement Learning to optimized classical algorithms.
+> **An optimized Hybrid-BFS Oracle comprising ~3 million unique canonical states.**
 
-The project currently features a **Perfect Play Oracle** capable of solving any board configuration instantly, alongside a "Survival Funnel" visualization that shows the player exactly how many winning paths remain in real-time.
+This project implements a high-performance solver and analysis tool for the classic **Peg Solitaire (Standard English Board)**. It features a real-time "Survival Funnel" dashboard that visualizes the exact number of winning paths available to the player at any given moment.
 
-## Simpler is Better
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Algorithm](https://img.shields.io/badge/Algorithm-Hybrid_Forward_Backward_BFS-purple)
+![State Space](https://img.shields.io/badge/States-~3M_Canonical-success)
 
-This project began with a heavy artillery approach: implementing **AlphaZero** (MCTS + ResNets) to "learn" the game. While educational, we realized that for a deterministic puzzle of this size (~33 holes), Reinforcement Learning is overkill and inefficient.
+## 🚀 The Algorithmic Journey
 
-**Why RL failed (or was inefficient) here:**
-* **Sparse Rewards:** The game has only one winning state out of billions.
-* **Determinism:** There is no luck involved. Approximating the solution with probabilities (Neural Networks) is less accurate than calculating the exact graph.
+This repository documents a journey of optimization, moving from "Heavy AI" to precise mathematical graph theory.
 
-**The Solution (`solver.py`):**
-We switched to **Reverse Breadth-First Search (BFS)** combined with **Bitboards**.
-Instead of searching for a needle in a haystack (start $\to$ win), we start from the needle (the winning state) and work backwards to find every possible valid board configuration.
+### Phase 1: The AI Attempt (Failed)
+Initially, we implemented **AlphaZero** (Deep Reinforcement Learning with MCTS).
+* **Lesson Learned:** For a deterministic puzzle with a finite state space (~33 bits), Neural Networks are overkill. They approximate the solution, whereas we needed exactness. Also, the reward signal is too sparse for efficient training.
 
-##  Key Features (`solver.py`)
+### Phase 2: Naive Reverse BFS (Inefficient)
+We switched to a **Reverse BFS** approach—starting from the single winning peg and working backwards.
+* **The Problem:** The algorithm found **13+ million** solvable states.
+* **Why:** It mapped the "Universal Solvable Space"—including board configurations that are mathematically impossible to reach from the standard starting game.
 
-The current engine runs on the CPU and is optimized for extreme speed:
+### Phase 3: The Hybrid Solution (Current) ✅
+To solve *exactly* the standard game, we implemented a **Forward-Pruned Reverse Solver**:
+1.  **Forward Pass:** Map all states reachable from the start (The "Reachable Universe").
+2.  **Backward Pass:** Map winning states starting from the end, **but strictly intersecting** with the Reachable Universe.
+* **Result:** The search space collapsed from 13M to exactly **~3 million** valid canonical states.
 
-* **Reverse Engineering:** Maps the entire game tree from the winning state backwards. It only visits states that *can* win.
-* **Bitwise Operations:** The board is represented as a single 64-bit integer, making move validation and application take nanoseconds.
-* **Symmetry Pruning:** Normalizes every board state to its canonical form (considering 8 rotational and reflectional symmetries), reducing the search space by ~8x.
-* **O(1) Lookup:** During gameplay, the AI doesn't "think." It checks a hash map of ~12 million pre-calculated states. If the state exists, it's a guaranteed win.
-* **Survival Funnel Graph:** A real-time dashboard showing the number of winning paths dropping as you make moves, creating a visual representation of the game's difficulty.
+## 🛠️ Technical Architecture
 
-##  Repository Structure
+The engine runs purely on the CPU using highly optimized techniques:
 
-###  The Working Solution
-* **`solver.py`**: The main executable. Contains the Bitboard engine, the Reverse BFS trainer, and the Tkinter GUI.
-* **`solitaire_fast_brain.pkl`**: (Generated upon first run) The "brain" file containing the map of all winning states.
+* **Hybrid Search Strategy:** Combines reachability analysis with reverse solving to eliminate unreachable states.
+* **Bitboards:** The board is represented as a single 64-bit integer. Move validation and application are bitwise operations ($O(1)$).
+* **Symmetry Pruning:** Every board state is normalized to its "Canonical Form" (minimum value of 8 rotations/reflections), reducing memory usage by factor of ~8.
+* **O(1) Lookup:** During gameplay, the AI checks a hash map. If the current state exists in the map, it is a guaranteed win.
 
-###  The Research Lab (`/WontWork`)
-This folder contains the original AlphaZero implementation. While these algorithms are powerful, they were not the right tool for *this specific* job. They are kept for documentation and educational purposes.
+## 📉 The "Survival Funnel"
 
-* **`MCTS.py`**: A full Monte Carlo Tree Search implementation with PUCT and Dirichlet noise.
-* **`NET.py`**: A ResNet-based Neural Network (PyTorch) with Policy and Value heads.
-* **`trainer.py`**: The training loop for self-play and backpropagation.
-* **`analyze_board_topology.py`**: An attempt to create heuristic rewards based on board fragmentation and "patterns of death."
+The UI features a unique analytics graph:
+* **Start:** Shows thousands of winning options.
+* **Mid-Game:** The graph creates a "funnel" shape as the decision space narrows.
+* **Dead End:** If the player makes a fatal mistake, the graph flatlines to **Zero** instantly, providing immediate feedback.
 
-## ⚡ Performance
+## 📂 Repository Structure
 
-* **Training Time:** ~30-60 seconds (on a standard CPU).
-* **Memory:** Maps approx. 10-12 million unique canonical winning states.
-* **Inference:** Instantaneous (Dictionary lookup).
+### ✅ The Production Engine
+* **`solver.py`**: The main executable. Contains the Hybrid Engine, Bitboard logic, and Tkinter GUI.
+* **`solitaire_standard_brain.pkl`**: (Generated on first run) The optimized "brain" file containing the map of ~3M winning states.
 
+### 🧪 The Research Archive (`/WontWork`)
+A collection of previous attempts, kept for educational purposes and documentation of the development process.
+* **`MCTS.py` / `NET.py` / `trainer.py`**: The deprecated AlphaZero implementation.
+* **`Legacy Solvers`**: Earlier brute-force attempts.
 
-**Yarden Viktor Dejorno**
+## ⚡ Performance Benchmarks
+
+| Metric | Naive Reverse BFS | **Hybrid Forward-Backward (Current)** |
+| :--- | :--- | :--- |
+| **Total States Mapped** | > 13,000,000 | **~2,900,000** |
+| **Logic** | Universal Solvability | **Standard Game Solvability** |
+| **Training Time** | ~5-10 Minutes | **~30 Seconds** |
+| **Inference Time** | Instant | **Instant** |
+
+## 🎮 How to Run
+
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/your-username/machshevet-solver.git](https://github.com/your-username/machshevet-solver.git)
+    cd machshevet-solver
+    ```
+
+2.  **Run the application:**
+    ```bash
+    python solver.py
+    ```
+    *Note: On the first run, the system will perform the "Hybrid Training" process to map the game graph. This takes about 30-40 seconds.*
+
+3.  **Controls:**
+    * **Left Click:** Move peg.
+    * **Auto Solve:** Watch the AI execute a perfect solution from your current state.
+    * **Undo:** Revert move (visualize how the "Funnel" recovers).
+
+---
+**Author:** Yarden Viktor Dejorno
