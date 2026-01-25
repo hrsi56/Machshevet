@@ -35,10 +35,7 @@ To solve this exactly, we built a **Hybrid Forward-Pruned Reverse Solver**. The 
 3.  **Intersection ($W = F \cap B$):** This leaves us with the true winning states.
 
 ### Phase 4: Breaking the Speed Limit (Parallel Batching) 🚀
-Even with Numba, we hit a wall around ~160 seconds due to Python's single-threaded nature.
-* **The Innovation:** We implemented **Lock-Free Parallel Batching**. Instead of processing one board at a time, we collect a batch of 25,000 boards and blast them across all CPU cores simultaneously using `nogil` and `prange`.
-* **The Result:** We slashed execution time by ~66%, processing over 23 million states in under a minute.
-
+We implemented **Lock-Free Parallel Batching fused with Symmetry Reduction**. Instead of solving raw boards one by one, we distribute batches across all CPU cores. Each core instantly collapses **8 symmetrical variations into 1 canonical state**, ensuring we only solve unique patterns in parallel.
 ---
 
 ## Performance Benchmarks
