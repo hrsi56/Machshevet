@@ -18,23 +18,23 @@ This project is a mathematical "Oracle" for the Standard English Board (33 holes
 
 This wasn't a straight line to a solution. It was a series of humbling failures.
 
-### Phase 1: The AI Overkill (Failure) ❌
+### Phase 1: The AI Overkill (Failure)
 Like many engineers, my first instinct was "let's train a model." We implemented **AlphaZero** with MCTS and reward shaping using Pagoda functions.
 * **The Reality:** It was complete overkill. We aren't playing Go; we are playing on a tiny 33-bit grid.
 * **The Dealbreaker:** The reward signal is painfully sparse. You only "win" on the very last move. Despite complex reward shaping, the neural network struggled to converge on a perfect solution for a deterministic puzzle.
 
-### Phase 2: Reverse BFS & The "Garden of Eden" (Failure) ⚠️
+### Phase 2: Reverse BFS & The "Garden of Eden" (Failure)
 We pivoted to a logic-based **Reverse BFS**—starting from the single winning peg and working backward to find all winning configurations.
 * **The Trap:** We ran into **State Space Inflation**. The algorithm found millions of states that were mathematically "solvable" (you could reach the end from them) but were **unreachable** from a standard full board.
 * **Garden of Eden:** We were mapping the "Universal Solvable Space" rather than the actual game graph, wasting RAM on states that can never exist in a real game.
 
-### Phase 3: The Hybrid HPC Solution (Success) ✅
+### Phase 3: The Hybrid HPC Solution (Success)
 To solve this exactly, we built a **Hybrid Forward-Pruned Reverse Solver**. The logic is simple set theory:
 1.  **Forward Pass ($F$):** Map the reachable universe from the start.
 2.  **Backward Pass ($B$):** Search backwards from the win, but *only* expand nodes that exist in $F$.
 3.  **Intersection ($W = F \cap B$):** This leaves us with the true winning states.
 
-### Phase 4: Breaking the Speed Limit (Parallel Batching) 🚀
+### Phase 4: Breaking the Speed Limit (Parallel Batching)
 We implemented **Lock-Free Parallel Batching fused with Symmetry Reduction**. Instead of solving raw boards one by one, we distribute batches across all CPU cores. Each core instantly collapses **8 symmetrical variations into 1 canonical state**, ensuring we only solve unique patterns in parallel.
 ---
 
