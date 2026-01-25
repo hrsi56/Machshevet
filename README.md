@@ -1,4 +1,4 @@
-# Machshevet (Peg Solitaire) Solver & Analytics
+# Machshevet (Peg Solitaire) Oracle
 
 > **A high-performance Hybrid-BFS Oracle comprising ~1.6 million unique winning states distilled from over 187 million raw possibilities.**
 
