@@ -12,6 +12,8 @@ This project is a mathematical "Oracle" for the Standard English Board (33 holes
 
 **Play online:** [https://hrsi56.pythonanywhere.com](https://hrsi56.pythonanywhere.com)
 
+![Machshevet Demo GUI](ezgif-8ce5c0a11533e3ac.gif)
+
 ---
 
 ## The Story of Failure (And How We Fixed It)
@@ -21,7 +23,7 @@ This wasn't a straight line to a solution. It was a series of humbling failures.
 ### Phase 1: The AI Overkill (Failure)
 Like many engineers, my first instinct was "let's train a model." We implemented **AlphaZero** with MCTS and reward shaping using Pagoda functions.
 * **The Reality:** It was complete overkill. We aren't playing Go; we are playing on a tiny 33-bit grid.
-* **The dealbreaker:** The reward signal is painfully sparse. You only "win" on the very last move. Despite complex reward shaping, the neural network struggled to converge on a perfect solution for a deterministic puzzle.
+* **The Dealbreaker:** The reward signal is painfully sparse. You only "win" on the very last move. Despite complex reward shaping, the neural network struggled to converge on a perfect solution for a deterministic puzzle.
 
 ### Phase 2: Reverse BFS & The "Garden of Eden" (Failure)
 We pivoted to a logic-based **Reverse BFS**—starting from the single winning peg and working backward to find all winning configurations.
@@ -111,4 +113,3 @@ The GUI includes a real-time analytics graph that visualizes your mortality in t
 * **The Funnel:** As you play, you see the number of possible winning paths dropping.
 * **The Flatline:** If you make a move that leads to a dead end, the graph hits **Zero** instantly. You might still have valid moves left to play, but the Oracle knows you are already dead.
 
-![Machshevet Demo GUI](ezgif-8ce5c0a11533e3ac.gif)
