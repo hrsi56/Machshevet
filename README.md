@@ -115,7 +115,7 @@ The GUI includes a real-time analytics graph that visualizes your mortality in t
 
 ---
 
-## 🧠 Data Analytics: The DNA of Victory
+## Data Analytics: The DNA of Victory
 
 We didn't just solve the game; we analyzed the 1.6 million winning states to understand the "physics" of a perfect game. By running `brain_analytics.py`, we extract deep insights from the solution space.
 
