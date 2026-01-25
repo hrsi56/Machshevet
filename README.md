@@ -1,6 +1,6 @@
 # Machshevet (Peg Solitaire) Solver & Analytics
 
-> **A high-performance Hybrid-BFS Oracle comprising ~1.6 million unique winning states.**
+> **A high-performance Hybrid-BFS Oracle comprising ~1.6 million unique winning states distilled from over 187 million raw possibilities.**
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Acceleration](https://img.shields.io/badge/Acceleration-Numba_Parallel-green)
