@@ -113,3 +113,29 @@ The GUI includes a real-time analytics graph that visualizes your mortality in t
 * **The Funnel:** As you play, you see the number of possible winning paths dropping.
 * **The Flatline:** If you make a move that leads to a dead end, the graph hits **Zero** instantly. You might still have valid moves left to play, but the Oracle knows you are already dead.
 
+---
+
+## 🧠 Data Analytics: The DNA of Victory
+
+We didn't just solve the game; we analyzed the 1.6 million winning states to understand the "physics" of a perfect game. By running `brain_analytics.py`, we extract deep insights from the solution space.
+
+> **Note on Symmetry:** The heatmaps below visualize the **Canonical States** (the unique mathematical representatives stored in memory). Because our solver collapses 8 symmetries into 1 (based on the lowest integer value), these maps reveal the **"algorithmic grain"**—the specific directional bias the solver utilizes to store data efficiently.
+
+### 1. The "Belly" of the Game (Combinatorial Explosion)
+Winning is easy at the start (many paths) and at the end (deterministic path). The difficulty lies in the middle—around 14-18 pegs—where the number of winning configurations explodes. This is the "Belly" of the game, where players usually lose.
+
+![Distribution Histogram](analytics_distribution.png)
+
+### 2. Timeline Analysis: Awakening vs. Last Stand
+We mapped every hole on the board to understand its role in the timeline of a victory.
+* **The Awakening (Left):** The minimum turn number ($T_{min}$) where a hole changes its state. Blue areas ($T1-T3$) are the "First Blood" zones.
+* **The Last Stand (Right):** The maximum turn number ($T_{max}$) where a hole still contains a peg. Red areas ($T31$) are the survivors.
+
+![Timeline Heatmaps](analytics_timeline.png)
+
+### 3. Time Center of Gravity (Expected Flux)
+This is the most advanced metric. It calculates the **weighted average turn** of activity for each hole based on volatility (Flux).
+* **Blue Zones ($T \approx 5$):** Early-game ammunition. Used to clear the path and then abandoned.
+* **Yellow Zones ($T \approx 28$):** End-game reserves. These pegs must remain untouched until the final moments.
+
+![Flux Heatmap](analytics_flux_time.png)
