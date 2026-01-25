@@ -41,6 +41,21 @@ We implemented **Lock-Free Parallel Batching fused with Symmetry Reduction**. In
 
 ---
 
+### Architecture Flow
+
+```mermaid
+graph TD
+    A[Start Board] --> B{Phase 1: Parallel Forward BFS}
+    B -->|Map Reachable Universe| C[Reachable Canonical States]
+    C --> D{Phase 2: Reverse Backtracking}
+    D -->|Prune Unreachable Nodes| E[True Winning Paths]
+    E --> F[Output: ~1.6M Unique States]
+    style B fill:#00C853,stroke:#333,stroke-width:2px,color:white
+    style D fill:#2962FF,stroke:#333,stroke-width:2px,color:white
+```
+
+---
+
 ## Performance Benchmarks
 
 To prove the necessity of our optimizations, we compared three versions of the solver.
@@ -51,6 +66,8 @@ To prove the necessity of our optimizations, we compared three versions of the s
 | **Reachable States** | ~187,800,000 (Redundant) | 23,475,688 | **23,475,688** |
 | **Winning States** | ~13,400,000 (Redundant) | 1,679,072 | **1,679,072** |
 | **Architecture** | Pure Python | Numba (JIT) | **Numba (Parallel `nogil`)** |
+
+> **Benchmark Context:** Tests performed on a **MacBook Pro (Nov 2023)** equipped with an **Apple M3 Chip (8 Cores)** and **16GB RAM**. The solver fully utilized all 8 cores via Numba's parallel execution.
 
 ---
 
@@ -77,24 +94,13 @@ The board has $D_4$ symmetry (8 rotations/reflections).
 
 ## The Mathematics of Optimization
 
-What appears in the code as a "programming trick" is actually a rigorous application of **Linear Algebra** and **Superposition**. We decompose a massive problem into small, independent sub-problems that fit into the CPU cache.
+This isn't just a "programming trick"; it is a rigorous application of Linear Algebra.
 
 #### 1. The Board as a Vector
 Mathematically, the game board is not an image but a vector $v$ in an $N$-dimensional space ($N=33$) over the binary field $\{0,1\}$.
-Any symmetry operation (rotation $90^\circ$, reflection) is a **Linear Transformation** $T$, which can be represented as a multiplication by a $33 \times 33$ Permutation Matrix $P$.
+Mathematically, symmetry operations are Linear Transformations represented by Permutation Matrices. We exploit the linearity property $T(A \oplus B) = T(A) \oplus T(B)$ to decompose the 33-bit vector into small chunks. This allows us to replace expensive runtime matrix multiplications with pre-calculated, cache-friendly bitwise Lookup Tables (LUTs).
 
-#### 2. The Principle of Linearity
-We utilize the fact that the transformation $T$ is linear with respect to the bitwise OR operation (vector addition). By splitting the 33-bit board $B$ into three disjoint 11-bit chunks ($C_0, C_1, C_2$), we get:
-
-$$B = C_0 \oplus C_1 \oplus C_2$$
-
-Due to linearity, the transformation of the whole board equals the sum of the transformations of its parts:
-
-$$T(B) = T(C_0) \oplus T(C_1) \oplus T(C_2)$$
-
-**The implication:** Instead of computing complex rotations on a 33-bit integer at runtime, we pre-calculate the rotations for every possible 11-bit chunk and simply sum them up.
-
-#### 3. Range Reduction (The "Cache Victory")
+#### 2. Range Reduction (The "Cache Victory")
 This split changes the algorithmic complexity of the lookup table from exponential to linear relative to the chunks.
 
 * **Naive Approach:** A lookup table for $2^{33}$ states requires **~8.5 Billion entries**. This is impossible to fit in RAM, let alone the CPU cache.
@@ -103,6 +109,29 @@ This split changes the algorithmic complexity of the lookup table from exponenti
     $$\text{Total Entries} = 8 \text{ (Symmetries)} \times 3 \text{ (Chunks)} \times 2048 \text{ (Values)} \approx 49,152$$
 
 This tiny table (~49KB) fits entirely inside the CPU's **L1 Cache**, allowing for near-instantaneous access times ($O(1)$) without ever touching the main RAM.
+
+---
+
+## Code Usage
+
+You can use the Oracle programmatically to solve specific board states or analyze moves:
+
+```python
+from solver_engine import PegSolitaireSolver
+
+# Initialize the brain
+solver = PegSolitaireSolver()
+
+# Load the pre-trained winning states (1.6M entries)
+# If not found, it triggers the Numba parallel training automatically.
+solver.train() 
+
+# Get the solution for a specific board state
+start_board = solver.get_initial_board()
+path = solver.solve_full_path(start_board)
+
+print(f"Solution found in {len(path)} moves!") 
+```
 
 ---
 
@@ -139,3 +168,12 @@ This is the most advanced metric. It calculates the **weighted average turn** of
 * **Yellow Zones ($T \approx 28$):** End-game reserves. These pegs must remain untouched until the final moments.
 
 ![Flux Heatmap](analytics_flux_time.png)
+
+---
+
+
+### Prerequisites
+* Python 3.10+
+* Numba (for the parallel engine)
+* NumPy
+* Tkinter (usually included with Python)
