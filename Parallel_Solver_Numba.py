@@ -8,9 +8,7 @@ from collections import deque
 import numpy as np
 from numba import njit, int64, prange, get_num_threads
 
-# ==========================================
-#  Part 0: The Core Engine (Numba Parallel Kernel)
-# ==========================================
+
 
 # 1. Helper function for canonical computation (Single Lookup)
 @njit(int64(int64, int64[:, :, :]), nogil=True)
@@ -52,9 +50,6 @@ def expand_batch_parallel(boards, table, moves_mask, checks_src, checks_dst, out
              canon = fast_canonical_lookup_single(next_board, table)
              out_buffer[idx] = canon
 
-# ==========================================
-#  Part 1: The Solver Manager
-# ==========================================
 class PegSolitaireSolver:
     MEMORY_FILE = "solitaire_parallel_brain.pkl"
     BATCH_SIZE = 25000  # Processing batch size
