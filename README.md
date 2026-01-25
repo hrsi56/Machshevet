@@ -21,7 +21,7 @@ This wasn't a straight line to a solution. It was a series of humbling failures.
 ### Phase 1: The AI Overkill (Failure)
 Like many engineers, my first instinct was "let's train a model." We implemented **AlphaZero** with MCTS and reward shaping using Pagoda functions.
 * **The Reality:** It was complete overkill. We aren't playing Go; we are playing on a tiny 33-bit grid.
-* **The Dealbreaker:** The reward signal is painfully sparse. You only "win" on the very last move. Despite complex reward shaping, the neural network struggled to converge on a perfect solution for a deterministic puzzle.
+* **The dealbreaker:** The reward signal is painfully sparse. You only "win" on the very last move. Despite complex reward shaping, the neural network struggled to converge on a perfect solution for a deterministic puzzle.
 
 ### Phase 2: Reverse BFS & The "Garden of Eden" (Failure)
 We pivoted to a logic-based **Reverse BFS**—starting from the single winning peg and working backward to find all winning configurations.
@@ -36,6 +36,7 @@ To solve this exactly, we built a **Hybrid Forward-Pruned Reverse Solver**. The 
 
 ### Phase 4: Breaking the Speed Limit (Parallel Batching)
 We implemented **Lock-Free Parallel Batching fused with Symmetry Reduction**. Instead of solving raw boards one by one, we distribute batches across all CPU cores. Each core instantly collapses **8 symmetrical variations into 1 canonical state**, ensuring we only solve unique patterns in parallel.
+
 ---
 
 ## Performance Benchmarks
@@ -56,7 +57,7 @@ To prove the necessity of our optimizations, we compared three versions of the s
 How do we process 23 million states in 53 seconds?
 
 ### 1. Breaking the GIL (Global Interpreter Lock)
-Python natively runs on a single core. We use Numba's `nogil=True` mode to release the interpreter lock, allowing true multi-core parallelism. This lets our solver utilize 100% of the CPU (e.g., all 8-16 cores) instead of just one.
+Python natively runs on a single core. We use Numba's `nogil=True` mode to release the interpreter lock, allowing true multicore parallelism. This lets our solver utilize 100% of the CPU (e.g., all 8-16 cores) instead of just one.
 
 ### 2. Lock-Free Memory Writes
 Writing to shared memory from multiple threads usually requires "Locks" (Mutex), which destroy performance.
@@ -109,3 +110,5 @@ The GUI includes a real-time analytics graph that visualizes your mortality in t
 
 * **The Funnel:** As you play, you see the number of possible winning paths dropping.
 * **The Flatline:** If you make a move that leads to a dead end, the graph hits **Zero** instantly. You might still have valid moves left to play, but the Oracle knows you are already dead.
+
+![Machshevet Demo GUI](ezgif-8ce5c0a11533e3ac.gif)
