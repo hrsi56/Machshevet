@@ -1,4 +1,4 @@
-# Machshevet (Peg Solitaire) Solver & Analytics 
+# Machshevet (Peg Solitaire) Solver & Analytics
 
 > **A high-performance Hybrid-BFS Oracle comprising ~1.6 million unique winning states.**
 
@@ -10,11 +10,11 @@ Most Peg Solitaire solvers are simple recursive backtracking scripts that find *
 
 This project is a mathematical "Oracle" for the Standard English Board (33 holes). It doesn't just "solve" the game; it maps the entire universe of valid gameplay. It knows exactly how many winning paths exist from your current state, and it knows the moment you've made a fatal mistake—often 15 moves before the game actually ends.
 
-you can play it on https://hrsi56.pythonanywhere.com
+Play online: https://hrsi56.pythonanywhere.com
 
 ---
 
-##  The Story of Failure (And How We Fixed It)
+## The Story of Failure (And How We Fixed It)
 
 This wasn't a straight line to a solution. It was a series of humbling failures.
 
@@ -30,36 +30,37 @@ We pivoted to a logic-based **Reverse BFS**—starting from the single winning p
 
 ### Phase 3: The Hybrid HPC Solution (Success) ✅
 To solve this exactly, we built a **Hybrid Forward-Pruned Reverse Solver**. The logic is simple set theory:
-1.  **Forward Pass ($F$):** Map the reachable universe from the start. (~23.5M states).
+1.  **Forward Pass ($F$):** Map the reachable universe from the start.
 2.  **Backward Pass ($B$):** Search backwards from the win, but *only* expand nodes that exist in $F$.
 3.  **Intersection ($W = F \cap B$):** This leaves us with the true winning states.
 
 ---
 
-##  Performance & Stats
+## Performance & The Symmetry Factor
 
-By ditching pure Python for **Numba** and using the Hybrid approach, we achieved massive speedups.
+To prove the necessity of our optimizations, we included a control script (`Solver_NoNumba_NoSymmetry.py`) that runs the raw algorithm without symmetry reduction or JIT compilation. The difference is exponential.
 
-| Metric | Pure Python BFS | **Machshevet (Numba Hybrid)** |
+| Metric | Raw Solver (No Symmetry) | **Machshevet (Optimized)** |
 | :--- | :--- | :--- |
-| **Execution Time** | Hours (or crash) | **~160 Seconds** |
-| **Total Reachable States** | ~23,475,688 | **23,475,688** |
-| **True Winning States** | Unknown | **1,679,072** (Canonical) |
+| **Execution Time** | Extremely Slow (Cache Misses) | **~160 Seconds** |
+| **Reachable States** | ~187,800,000 (Redundant) | **23,475,688** (Canonical) |
+| **Winning States** | ~13,400,000 (Redundant) | **1,679,072** (Canonical) |
+| **RAM Usage** | **~8x Higher** (Explodes Memory) | **1x (Efficient)** |
 
 ### Under the Hood
 * **Bitboards:** The 33-hole board is a single `uint64`. Move validation is $O(1)$ using bitwise masks.
-* **Numba JIT:** Python is too slow for 23 million states. We compile the core logic to machine code, bypassing the GIL.
-* **Symmetry Reduction:** The board has $D_4$ symmetry (8 rotations/reflections). We normalize every state to its "Canonical ID" (minimum integer value), effectively slashing memory usage by 8x.
+* **Numba JIT:** Python is too slow for traversing millions of states. We compile the core logic to machine code, bypassing the GIL.
+* **Symmetry Reduction:** The board has $D_4$ symmetry (8 rotations/reflections).
+    * *Without optimization:* The solver treats every rotated board as a new unique state, expanding the search space by a factor of 8 (see `Solver_NoNumba_NoSymmetry.py`).
+    * *With optimization:* We normalize every state to its "Canonical ID" (minimum integer value), slashing memory usage by 8x and keeping the working set small enough to fit in the CPU Cache.
 
 ---
 
-##  The "Survival Funnel"
+## The "Survival Funnel"
 
 The GUI includes a real-time analytics graph that visualizes your mortality in the game.
 
 * **The Funnel:** As you play, you see the number of possible winning paths dropping.
 * **The Flatline:** If you make a move that leads to a dead end, the graph hits **Zero** instantly. You might still have valid moves left to play, but the Oracle knows you are already dead.
 
-
-
-you can play it on https://hrsi56.pythonanywhere.com
+Play online: https://hrsi56.pythonanywhere.com
