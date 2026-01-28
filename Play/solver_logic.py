@@ -3,38 +3,25 @@ import os
 import numpy as np
 
 
-# ==========================================
-#  חלק 0: פונקציית עזר (ללא Numba)
-# ==========================================
 def fast_canonical_lookup(board, table):
-	"""
-    גרסה ללא Numba עבור PythonAnywhere.
-    מבצעת את אותו חישוב בדיוק, רק ב-Python רגיל.
-    """
+	"""Pure Python implementation for environments without Numba support (e.g. PythonAnywhere)."""
 	min_val = board
-	# פירוק הלוח ל-3 חלקים של 11 ביט (כמו בקוד המקורי)
 	c0 = board & 0x7FF
 	c1 = (board >> 11) & 0x7FF
 	c2 = (board >> 22) & 0x7FF
 
-	# בדיקת 8 הסימטריות
 	for sym_idx in range(8):
-		# שליפה מהטבלה (Table Lookup)
 		v0 = table[sym_idx, 0, c0]
 		v1 = table[sym_idx, 1, c1]
 		v2 = table[sym_idx, 2, c2]
 
 		mapped_board = v0 | v1 | v2
-
 		if mapped_board < min_val:
 			min_val = mapped_board
 
 	return min_val
 
 
-# ==========================================
-#  חלק 1: המנוע (Solver Class)
-# ==========================================
 class PegSolitaireSolver:
 	MEMORY_FILE = "solitaire_pro_brain.pkl"
 
@@ -43,8 +30,10 @@ class PegSolitaireSolver:
 		self.bit_to_r_c = {}
 		self.valid_mask = 0
 		self.center_bit = 0
+		self.moves = []
+		self.winning_states = set()
 
-		# מיפוי הלוח
+		# Board Initialization
 		idx = 0
 		for r in range(7):
 			for c in range(7):
@@ -57,11 +46,11 @@ class PegSolitaireSolver:
 						self.center_bit = idx
 					idx += 1
 
+		# Precompute Symmetries & Lookup Table
 		self.symmetry_maps = self._generate_base_symmetry_maps()
 		self.lookup_table = self._build_numpy_lookup_table()
 
-		# הכנת מהלכים
-		self.moves = []
+		# Precompute Moves
 		directions = [(-2, 0), (2, 0), (0, -2), (0, 2)]
 		for r in range(7):
 			for c in range(7):
@@ -73,37 +62,28 @@ class PegSolitaireSolver:
 					if (mr, mc) in self.r_c_to_bit and (drr, dcc) in self.r_c_to_bit:
 						mid = self.r_c_to_bit[(mr, mc)]
 						dst = self.r_c_to_bit[(drr, dcc)]
-						mask = (1 << src) | (1 << mid) | (1 << dst)
 						self.moves.append({
-							'mask': mask,
+							'mask': (1 << src) | (1 << mid) | (1 << dst),
 							'check_src': (1 << src) | (1 << mid),
 							'check_dst': (1 << dst),
-							'src': src, 'dst': dst,
 							'move_key': f"{r},{c}->{drr},{dcc}"
 						})
 
-		self.winning_states = set()
-
-		# נתיב אבסולוטי לקובץ המוח (חשוב ב-PythonAnywhere)
+		# Load "Brain" (Absolute path required for specific hosting envs)
 		base_dir = os.path.dirname(os.path.abspath(__file__))
 		self.brain_path = os.path.join(base_dir, self.MEMORY_FILE)
-
 		self.brain_loaded = self.load_memory()
 
 	def _generate_base_symmetry_maps(self):
 		maps = []
 		for i in range(8):
 			mapping = {}
-			for r in range(7):
-				for c in range(7):
-					if (r, c) not in self.r_c_to_bit: continue
-					rr, cc = r, c
-					if i & 4: rr, cc = cc, rr
-					if i & 1: rr, cc = cc, 6 - rr
-					if i & 2: rr, cc = 6 - rr, 6 - cc
-					src_idx = self.r_c_to_bit[(r, c)]
-					dst_idx = self.r_c_to_bit[(rr, cc)]
-					mapping[src_idx] = dst_idx
+			for r, c in self.r_c_to_bit:
+				rr, cc = r, c
+				if i & 4: rr, cc = cc, rr
+				if i & 1: rr, cc = cc, 6 - rr
+				if i & 2: rr, cc = 6 - rr, 6 - cc
+				mapping[self.r_c_to_bit[(r, c)]] = self.r_c_to_bit[(rr, cc)]
 			maps.append(mapping)
 		return maps
 
@@ -118,11 +98,9 @@ class PegSolitaireSolver:
 					t = val
 					while t:
 						lsb = t & -t
-						local_idx = lsb.bit_length() - 1
-						real_idx = local_idx + bit_offset
+						real_idx = (lsb.bit_length() - 1) + bit_offset
 						if real_idx in mapping:
-							target_idx = mapping[real_idx]
-							transformed_val |= (1 << target_idx)
+							transformed_val |= (1 << mapping[real_idx])
 						t ^= lsb
 					table[sym_idx, chunk_id, val] = transformed_val
 		return table
@@ -131,9 +109,7 @@ class PegSolitaireSolver:
 		return fast_canonical_lookup(board, self.lookup_table)
 
 	def get_initial_board(self):
-		board = self.valid_mask
-		board &= ~(1 << self.center_bit)
-		return board
+		return self.valid_mask & ~(1 << self.center_bit)
 
 	def load_memory(self):
 		if os.path.exists(self.brain_path):
@@ -172,6 +148,7 @@ class PegSolitaireSolver:
 		for m in self.moves:
 			if (board & m['check_src'] == m['check_src']) and (board & m['check_dst'] == 0):
 				next_board = board ^ m['mask']
+				# Pruning based on precomputed states
 				if not self.brain_loaded or self.get_canonical(next_board) in self.winning_states:
 					candidates.append((m, next_board))
 
@@ -183,4 +160,5 @@ class PegSolitaireSolver:
 			if self._find_path_forward(next_b, path):
 				return True
 			path.pop()
+
 		return False

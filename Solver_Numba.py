@@ -10,24 +10,19 @@ from numba import njit, int64
 
 
 # ==========================================
-#  חלק 0: האצת Numba (מחוץ למחלקה)
+#  Numba Accelerated Functions
 # ==========================================
 
-# פונקציה זו מקומפלת לקוד מכונה ע"י Numba לביצועים מקסימליים
-# היא מקבלת לוח וטבלאות מוכנות מראש ומחזירה את המצב הקנוני המינימלי
 @njit(int64(int64, int64[:, :, :]))
 def fast_canonical_lookup(board, table):
 	min_val = board
 
-	# חילוץ 3 מקטעים (Chunks) של 11 ביט כל אחד
-	# אנו משתמשים ב-Mask 0x7FF שזה 2047 (11 ביטים דלוקים)
-	c0 = board & 0x7FF  # Bits 0-10
-	c1 = (board >> 11) & 0x7FF  # Bits 11-21
-	c2 = (board >> 22) & 0x7FF  # Bits 22-32
+	# Extract 3 chunks of 11 bits
+	c0 = board & 0x7FF
+	c1 = (board >> 11) & 0x7FF
+	c2 = (board >> 22) & 0x7FF
 
-	# בדיקת 8 הסימטריות במקביל באמצעות גישה ישירה לזיכרון
 	for sym_idx in range(8):
-		# OR מהיר בין 3 החלקים המומרים
 		mapped_board = (table[sym_idx, 0, c0] |
 		                table[sym_idx, 1, c1] |
 		                table[sym_idx, 2, c2])
@@ -39,7 +34,7 @@ def fast_canonical_lookup(board, table):
 
 
 # ==========================================
-#  חלק 1: המנוע (Hybrid Solver)
+#  Solver Engine
 # ==========================================
 class PegSolitaireSolver:
 	MEMORY_FILE = "solitaire_pro_brain.pkl"
@@ -50,7 +45,6 @@ class PegSolitaireSolver:
 		self.valid_mask = 0
 		self.center_bit = 0
 
-		# מיפוי הלוח (צורת הצלב)
 		idx = 0
 		for r in range(7):
 			for c in range(7):
@@ -63,13 +57,9 @@ class PegSolitaireSolver:
 						self.center_bit = idx
 					idx += 1
 
-		# יצירת מפות סימטריה רגילות (לצורך בניית הטבלאות המהירות)
 		self.symmetry_maps = self._generate_base_symmetry_maps()
-
-		# בניית הטבלאות המהירות עבור Numba
 		self.lookup_table = self._build_numpy_lookup_table()
 
-		# הכנת מהלכים (Forward & Reverse)
 		self.moves = []
 		self.reverse_moves = []
 
@@ -84,10 +74,8 @@ class PegSolitaireSolver:
 					if (mr, mc) in self.r_c_to_bit and (drr, dcc) in self.r_c_to_bit:
 						mid = self.r_c_to_bit[(mr, mc)]
 						dst = self.r_c_to_bit[(drr, dcc)]
-
 						mask = (1 << src) | (1 << mid) | (1 << dst)
 
-						# Forward move (למשחק ולשלב 1)
 						self.moves.append({
 							'mask': mask,
 							'check_src': (1 << src) | (1 << mid),
@@ -95,7 +83,6 @@ class PegSolitaireSolver:
 							'src': src, 'dst': dst
 						})
 
-						# Reverse move (לשלב 2)
 						self.reverse_moves.append({
 							'mask': mask,
 							'req_peg': (1 << dst),
@@ -106,58 +93,42 @@ class PegSolitaireSolver:
 		self.loaded_from_disk = self.load_memory()
 
 	def _generate_base_symmetry_maps(self):
-		"""מייצר את המיפוי הבסיסי (אינדקס לאינדקס) עבור 8 הסימטריות"""
 		maps = []
 		for i in range(8):
 			mapping = {}
-			for r in range(7):
-				for c in range(7):
-					if (r, c) not in self.r_c_to_bit: continue
-					rr, cc = r, c
-					if i & 4: rr, cc = cc, rr
-					if i & 1: rr, cc = cc, 6 - rr
-					if i & 2: rr, cc = 6 - rr, 6 - cc
-					src_idx = self.r_c_to_bit[(r, c)]
-					dst_idx = self.r_c_to_bit[(rr, cc)]
-					mapping[src_idx] = dst_idx
+			for r, c in self.r_c_to_bit:
+				rr, cc = r, c
+				if i & 4: rr, cc = cc, rr
+				if i & 1: rr, cc = cc, 6 - rr
+				if i & 2: rr, cc = 6 - rr, 6 - cc
+				mapping[self.r_c_to_bit[(r, c)]] = self.r_c_to_bit[(rr, cc)]
 			maps.append(mapping)
 		return maps
 
 	def _build_numpy_lookup_table(self):
-		"""בונה את הטבלה התלת-ממדית עבור Numba"""
 		print("⚡ Building Optimized Lookup Tables (Numba)...")
-		# [8 symmetries][3 chunks][2048 values]
 		table = np.zeros((8, 3, 2048), dtype=np.int64)
-
 		for sym_idx in range(8):
 			mapping = self.symmetry_maps[sym_idx]
 			for chunk_id in range(3):
 				bit_offset = chunk_id * 11
-				# עוברים על כל הקומבינציות האפשריות של 11 ביט
 				for val in range(2048):
 					transformed_val = 0
 					t = val
 					while t:
 						lsb = t & -t
-						local_idx = lsb.bit_length() - 1
-						real_idx = local_idx + bit_offset
-
+						real_idx = (lsb.bit_length() - 1) + bit_offset
 						if real_idx in mapping:
-							target_idx = mapping[real_idx]
-							transformed_val |= (1 << target_idx)
+							transformed_val |= (1 << mapping[real_idx])
 						t ^= lsb
-
 					table[sym_idx, chunk_id, val] = transformed_val
 		return table
 
 	def get_canonical(self, board):
-		# קריאה לפונקציית ה-Numba המהירה
 		return fast_canonical_lookup(board, self.lookup_table)
 
 	def get_initial_board(self):
-		board = self.valid_mask
-		board &= ~(1 << self.center_bit)
-		return board
+		return self.valid_mask & ~(1 << self.center_bit)
 
 	def save_memory(self):
 		print(f"💾 Saving {len(self.winning_states)} states...")
@@ -182,38 +153,29 @@ class PegSolitaireSolver:
 		print("🧠 Starting Hybrid Training (Optimized Memory + Numba)...")
 		start_time = time.time()
 
-		# ==========================================
-		# PHASE 1: Forward Reachability (Filter)
-		# ==========================================
+		# Phase 1: Forward Reachability
+		# Filter strictly for reachable states to prune the search space later
 		print("   Phase 1: Mapping reachable universe (Forward BFS)...")
 
 		start_board = self.get_initial_board()
 		canon_start = self.get_canonical(start_board)
-
-		# שינוי: משתמשים בסט אחד בלבד גם לזיכרון וגם למניעת כפילות
 		reachable_canonicals = {canon_start}
-
 		queue = deque([start_board])
 
-		count = 0
 		while queue:
 			current_board = queue.popleft()
-			count += 1
 			for m in self.moves:
 				if (current_board & m['check_src'] == m['check_src']) and (current_board & m['check_dst'] == 0):
 					next_board = current_board ^ m['mask']
 					canon_next = self.get_canonical(next_board)
-
-					# בדיקה מול הסט היחיד
 					if canon_next not in reachable_canonicals:
 						reachable_canonicals.add(canon_next)
 						queue.append(next_board)
 
 		print(f"   Phase 1 Complete. Total Reachable Unique States: {len(reachable_canonicals)}")
 
-		# ==========================================
-		# PHASE 2: Reverse Solving (Pruned)
-		# ==========================================
+		# Phase 2: Reverse Solving
+		# Backtracking from the winning state, checking against Phase 1 filter
 		print("   Phase 2: Backtracking from win condition...")
 
 		end_state = (1 << self.center_bit)
@@ -223,36 +185,25 @@ class PegSolitaireSolver:
 			print("❌ Error: Winning state is theoretically impossible from start!")
 			return
 
-		# שינוי: משתמשים ישירות ב-self.winning_states
 		self.winning_states = {canon_end}
 		queue = deque([end_state])
 
-		# הערה: כאן הזיכרון של Phase 1 עדיין תפוס.
-		# אם יש בעיית RAM קשה, אפשר למחוק את reachable_canonicals ולהסתמך על bloom filter,
-		# אבל זה מסובך מדי. לרוב המחשבים זה יעבוד מצוין ככה.
-
-		processed = 0
 		while queue:
 			current_board = queue.popleft()
-			processed += 1
-
 			for m in self.reverse_moves:
 				if (current_board & m['req_peg']) and (current_board & m['req_empty'] == 0):
 					prev_board = current_board ^ m['mask']
 					canon_prev = self.get_canonical(prev_board)
 
-					# בדיקה כפולה מול הסט הקיים של המנצחים ומול היקום האפשרי
 					if canon_prev not in self.winning_states:
 						if canon_prev in reachable_canonicals:
 							self.winning_states.add(canon_prev)
 							queue.append(prev_board)
 
-
 		duration = time.time() - start_time
 		print(f"✅ Training Complete in {duration:.2f}s.")
 		print(f"   Final Database Size: {len(self.winning_states)} states.")
 		self.save_memory()
-
 
 	def get_winning_moves_count(self, board):
 		count = 0
@@ -271,7 +222,6 @@ class PegSolitaireSolver:
 
 	def _find_path_forward(self, board, path):
 		if board == (1 << self.center_bit): return True
-		# בדיקה מהירה בזיכרון
 		if self.get_canonical(board) not in self.winning_states: return False
 
 		candidates = []
@@ -281,7 +231,7 @@ class PegSolitaireSolver:
 				if self.get_canonical(next_board) in self.winning_states:
 					candidates.append((m, next_board))
 
-		# יוריסטיקה: מיון לפי כמות האפשרויות העתידיות
+		# Heuristic: Sort by future options count (stability)
 		candidates.sort(key=lambda x: self.get_winning_moves_count(x[1]), reverse=True)
 
 		for m, next_b in candidates:
@@ -301,7 +251,7 @@ class PegSolitaireSolver:
 
 
 # ==========================================
-#  חלק 2: רכיב הגרף (GUI)
+#  Graph Component
 # ==========================================
 class SurvivalFunnelGraph(tk.Canvas):
 	def __init__(self, parent, width=300, height=120, bg="#222"):
@@ -353,13 +303,12 @@ class SurvivalFunnelGraph(tk.Canvas):
 		cx, cy = coords[-2], coords[-1]
 		self.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill="white", outline=color, width=2, tag="graph")
 
-		msg = f"Winning Moves: {curr}"
-		if curr == 0: msg = "DEAD END"
+		msg = f"Winning Moves: {curr}" if curr > 0 else "DEAD END"
 		self.create_text(10, 15, text=msg, anchor="w", fill="white", font=("Consolas", 10, "bold"), tag="text")
 
 
 # ==========================================
-#  חלק 3: ממשק המשתמש (GUI)
+#  GUI
 # ==========================================
 class PegSolitaireGUI:
 	CELL_SIZE = 45
@@ -380,17 +329,15 @@ class PegSolitaireGUI:
 		self.animating = False
 		self._init_ui()
 		self.draw_board()
-
-		initial_moves = self.solver.get_winning_moves_count(self.current_board)
-		self.graph.update_graph(initial_moves)
+		self.graph.update_graph(self.solver.get_winning_moves_count(self.current_board))
 
 	def _init_ui(self):
 		main = tk.Frame(self.root, bg=self.COLOR_BG)
 		main.pack(fill="both", expand=True, padx=20, pady=20)
 
-		# Left Panel
 		left = tk.Frame(main, bg=self.COLOR_BG)
 		left.pack(side="left")
+
 		sz = 7 * self.CELL_SIZE + 2 * self.PADDING
 		self.cvs = tk.Canvas(left, width=sz, height=sz, bg=self.COLOR_BG, highlightthickness=0)
 		self.cvs.pack()
@@ -402,13 +349,14 @@ class PegSolitaireGUI:
 		tk.Button(btns, text="Auto Solve", command=self.auto_solve, bg="#00C853", fg="white").pack(side=tk.LEFT, padx=5)
 		tk.Button(btns, text="Reset", command=self.reset, width=8).pack(side=tk.LEFT, padx=5)
 
-		# Right Panel
 		right = tk.Frame(main, bg=self.COLOR_BG)
 		right.pack(side="right", fill="y", padx=(20, 0))
+
 		tk.Label(right, text="Survival Funnel", font=("Segoe UI", 12, "bold"), fg="#aaa", bg=self.COLOR_BG).pack(
 			anchor="w")
 		self.graph = SurvivalFunnelGraph(right, width=250, height=150)
 		self.graph.pack(pady=(5, 20))
+
 		self.lbl_status = tk.Label(right, text="Game Start", font=("Segoe UI", 16, "bold"), fg="white",
 		                           bg=self.COLOR_BG)
 		self.lbl_status.pack(pady=10)
@@ -423,12 +371,9 @@ class PegSolitaireGUI:
 				x = self.PADDING + c * self.CELL_SIZE + self.CELL_SIZE // 2
 				y = self.PADDING + r * self.CELL_SIZE + self.CELL_SIZE // 2
 				fill = self.COLOR_PEG if has_peg else self.COLOR_HOLE
-				out = ""
-				width = 1
+				out, width = "", 1
 				if has_peg and self.selected == (r, c):
-					fill = self.COLOR_SELECTED;
-					out = "white";
-					width = 2
+					fill, out, width = self.COLOR_SELECTED, "white", 2
 				self.cvs.create_oval(x - 18, y - 18, x + 18, y + 18, fill=fill, outline=out, width=width)
 
 	def on_click(self, e):
@@ -437,6 +382,7 @@ class PegSolitaireGUI:
 		if (r, c) not in self.solver.r_c_to_bit: return
 		idx = self.solver.r_c_to_bit[(r, c)]
 		has_peg = (self.current_board >> idx) & 1
+
 		if self.selected:
 			if self.selected == (r, c):
 				self.selected = None
@@ -456,6 +402,7 @@ class PegSolitaireGUI:
 			if m['src'] == s_idx and m['dst'] == d_idx:
 				if (self.current_board & (m['check_src'] ^ (1 << s_idx))): move = m
 				break
+
 		if move:
 			self.history.append(self.current_board)
 			self.current_board ^= move['mask']
@@ -463,6 +410,7 @@ class PegSolitaireGUI:
 			wins = self.solver.get_winning_moves_count(self.current_board)
 			self.graph.update_graph(wins)
 			self.draw_board()
+
 			if wins > 0:
 				self.lbl_status.config(text="Safe Move ✅", fg="#00E676")
 			elif self.current_board == (1 << self.solver.center_bit):
@@ -484,8 +432,7 @@ class PegSolitaireGUI:
 		self.history = []
 		self.current_board = self.solver.get_initial_board()
 		self.graph.reset()
-		initial_moves = self.solver.get_winning_moves_count(self.current_board)
-		self.graph.update_graph(initial_moves)
+		self.graph.update_graph(self.solver.get_winning_moves_count(self.current_board))
 		self.draw_board()
 		self.lbl_status.config(text="Game Start", fg="white")
 
@@ -510,9 +457,6 @@ class PegSolitaireGUI:
 		self.root.after(200, lambda: self._animate(states, idx + 1))
 
 
-# ==========================================
-#  Main Entry Point
-# ==========================================
 def main():
 	root = tk.Tk()
 	root.withdraw()
@@ -524,13 +468,10 @@ def main():
 		splash.overrideredirect(True)
 		splash.configure(bg="#222")
 
-		lbl = tk.Label(splash, text="Training AI Brain...", font=("Segoe UI", 18, "bold"), fg="white", bg="#222")
-		lbl.pack(pady=(40, 10))
-
-		lbl_sub = tk.Label(splash, text="Optimizing using Numba & Pruning\nPlease Wait",
-		                   font=("Segoe UI", 10), fg="#aaa", bg="#222")
-		lbl_sub.pack()
-
+		tk.Label(splash, text="Training AI Brain...", font=("Segoe UI", 18, "bold"), fg="white", bg="#222").pack(
+			pady=(40, 10))
+		tk.Label(splash, text="Optimizing using Numba & Pruning\nPlease Wait",
+		         font=("Segoe UI", 10), fg="#aaa", bg="#222").pack()
 		root.update()
 
 		def run_train():
@@ -540,7 +481,6 @@ def main():
 		threading.Thread(target=run_train).start()
 	else:
 		finish(root, None, solver)
-
 	root.mainloop()
 
 

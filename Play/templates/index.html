@@ -51,7 +51,6 @@
         .btn-reset { background: #D50000; color: white; }
         button:hover { opacity: 0.8; }
 
-        /* לוח המשחק */
         .board-container {
             background: var(--board-bg);
             padding: 20px;
@@ -90,7 +89,6 @@
             transform: scale(1.1);
         }
 
-        /* אינדיקטורים של Heatmap */
         .heat-indicator {
             position: absolute;
             width: 20px;
@@ -109,10 +107,7 @@
         .heat-good { background: var(--heat-good); }
         .heat-bad { background: var(--heat-bad); }
 
-        /* לוח צד */
-        .sidebar {
-            width: 300px;
-        }
+        .sidebar { width: 300px; }
         .status-box {
             background: #2c2c2c;
             padding: 15px;
@@ -162,9 +157,8 @@
         let gridData = [];
         let selectedCell = null;
         let chart;
-        let historyData = []; // לגרף
+        let historyData = [];
 
-        // אתחול הגרף
         function initChart() {
             const ctx = document.getElementById('funnelChart').getContext('2d');
             chart = new Chart(ctx, {
@@ -205,12 +199,10 @@
 
             countElem.innerText = data.winning_moves;
 
-            // עדכון הגרף
             historyData.push(data.winning_moves);
             chart.data.labels = historyData.map((_, i) => i);
             chart.data.datasets[0].data = historyData;
 
-            // צבע הקו לפי מצב
             if(data.winning_moves === 0) {
                 chart.data.datasets[0].borderColor = '#D50000';
                 msgElem.innerText = "DEAD END 💀";
@@ -247,11 +239,6 @@
                         }
                         hole.onclick = () => onCellClick(r, c, cellVal);
                         div.appendChild(hole);
-
-                        // בדיקה אם להוסיף אינדיקטור HEATMAP
-                        if (selectedCell) {
-                             // האינדיקטורים מתווספים אסינכרונית בפונקציה נפרדת
-                        }
                     }
                     div.id = `cell-${r}-${c}`;
                     container.appendChild(div);
@@ -263,13 +250,12 @@
         async function onCellClick(r, c, val) {
             if (selectedCell) {
                 if (selectedCell.r === r && selectedCell.c === c) {
-                    selectedCell = null; // ביטול בחירה
+                    selectedCell = null;
                     renderBoard();
                 } else if (val === 1) {
-                    selectedCell = {r, c}; // החלפת בחירה
+                    selectedCell = {r, c};
                     renderBoard();
                 } else if (val === 0) {
-                    // ניסיון לזוז
                     await tryMove(selectedCell, {r, c});
                 }
             } else if (val === 1) {
@@ -308,7 +294,7 @@
                 selectedCell = null;
                 await fetchState();
             } else {
-                selectedCell = null; // מהלך לא חוקי
+                selectedCell = null;
                 renderBoard();
             }
         }
@@ -316,8 +302,9 @@
         async function undo() {
             const res = await fetch('/api/undo', { method: 'POST' });
             if ((await res.json()).success) {
-                historyData.pop(); // הסר נוכחי
-                historyData.pop(); // הסר קודם (כי fetchState יוסיף אותו מחדש)
+                // Sync history with fetchState which pushes a new entry
+                historyData.pop();
+                historyData.pop();
                 await fetchState();
             }
         }
@@ -334,7 +321,6 @@
             const data = await res.json();
 
             if (data.solved) {
-                // אנימציה פשוטה
                 for (let moveKey of data.path) {
                     await fetch('/api/move', {
                         method: 'POST',
@@ -342,7 +328,7 @@
                         body: JSON.stringify({ move_key: moveKey })
                     });
                     await fetchState();
-                    await new Promise(r => setTimeout(r, 200)); // השהיה לאנימציה
+                    await new Promise(r => setTimeout(r, 200));
                 }
             } else {
                 alert("Cannot solve from this position!");

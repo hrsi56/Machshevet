@@ -7,9 +7,6 @@ import time
 from collections import deque
 
 
-# ==========================================
-#  Part 1: The Engine (Forward-Pruned Reverse Solver)
-# ==========================================
 class PegSolitaireSolver:
 	MEMORY_FILE = "solitaire_standard_brain.pkl"
 
@@ -32,8 +29,6 @@ class PegSolitaireSolver:
 					idx += 1
 
 		self.symmetry_maps = self._generate_symmetry_maps()
-
-		# Pre-calculate moves
 		self.moves = []
 		self.reverse_moves = []
 
@@ -48,10 +43,8 @@ class PegSolitaireSolver:
 					if (mr, mc) in self.r_c_to_bit and (drr, dcc) in self.r_c_to_bit:
 						mid = self.r_c_to_bit[(mr, mc)]
 						dst = self.r_c_to_bit[(drr, dcc)]
-
 						mask = (1 << src) | (1 << mid) | (1 << dst)
 
-						# Forward move (used for game & phase 1)
 						self.moves.append({
 							'mask': mask,
 							'check_src': (1 << src) | (1 << mid),
@@ -59,7 +52,6 @@ class PegSolitaireSolver:
 							'src': src, 'dst': dst
 						})
 
-						# Reverse move (used for phase 2)
 						self.reverse_moves.append({
 							'mask': mask,
 							'req_peg': (1 << dst),
@@ -73,16 +65,12 @@ class PegSolitaireSolver:
 		maps = []
 		for i in range(8):
 			mapping = {}
-			for r in range(7):
-				for c in range(7):
-					if (r, c) not in self.r_c_to_bit: continue
-					rr, cc = r, c
-					if i & 4: rr, cc = cc, rr
-					if i & 1: rr, cc = cc, 6 - rr
-					if i & 2: rr, cc = 6 - rr, 6 - cc
-					src_idx = self.r_c_to_bit[(r, c)]
-					dst_idx = self.r_c_to_bit[(rr, cc)]
-					mapping[src_idx] = dst_idx
+			for r, c in self.r_c_to_bit:
+				rr, cc = r, c
+				if i & 4: rr, cc = cc, rr
+				if i & 1: rr, cc = cc, 6 - rr
+				if i & 2: rr, cc = 6 - rr, 6 - cc
+				mapping[self.r_c_to_bit[(r, c)]] = self.r_c_to_bit[(rr, cc)]
 			maps.append(mapping)
 		return maps
 
@@ -91,21 +79,17 @@ class PegSolitaireSolver:
 		for mapping in self.symmetry_maps:
 			mapped_board = 0
 			temp = board
-			# Optimization: Basic bit loop
 			while temp:
 				lsb = temp & -temp
 				idx = lsb.bit_length() - 1
-				new_idx = mapping[idx]
-				mapped_board |= (1 << new_idx)
+				mapped_board |= (1 << mapping[idx])
 				temp ^= lsb
 			if mapped_board < min_val:
 				min_val = mapped_board
 		return min_val
 
 	def get_initial_board(self):
-		board = self.valid_mask
-		board &= ~(1 << self.center_bit)
-		return board
+		return self.valid_mask & ~(1 << self.center_bit)
 
 	def save_memory(self):
 		print(f"💾 Saving {len(self.winning_states)} states...")
@@ -130,24 +114,18 @@ class PegSolitaireSolver:
 		print("🧠 Starting Hybrid Training (Optimized Memory)...")
 		start_time = time.time()
 
-		# ==========================================
-		# PHASE 1: Forward Reachability (Filter)
-		# ==========================================
+		# Phase 1: Forward Reachability (Filter)
 		print("   [Phase 1] Mapping reachable universe from standard board...")
 
 		start_board = self.get_initial_board()
 		canon_start = self.get_canonical(start_board)
-
-		# תיקון 1: שימוש במשתנה יחיד
 		reachable_canonicals = {canon_start}
-
 		queue = deque([start_board])
 
 		loop_count = 0
 		while queue:
 			current_board = queue.popleft()
 			loop_count += 1
-
 			if loop_count % 50000 == 0:
 				print(f"      -> Found {len(reachable_canonicals)} unique states so far... (Queue: {len(queue)})")
 
@@ -155,8 +133,6 @@ class PegSolitaireSolver:
 				if (current_board & m['check_src'] == m['check_src']) and (current_board & m['check_dst'] == 0):
 					next_board = current_board ^ m['mask']
 					canon_next = self.get_canonical(next_board)
-
-					# בדיקה מול הסט היחיד
 					if canon_next not in reachable_canonicals:
 						reachable_canonicals.add(canon_next)
 						queue.append(next_board)
@@ -164,9 +140,7 @@ class PegSolitaireSolver:
 		print(f"   ✅ Phase 1 Complete. Total Reachable States: {len(reachable_canonicals)}")
 		print(f"   ⏱️  Time for Phase 1: {time.time() - start_time:.2f}s")
 
-		# ==========================================
-		# PHASE 2: Reverse Solving (Intersection)
-		# ==========================================
+		# Phase 2: Reverse Solving (Intersection)
 		print("\n   [Phase 2] Backtracking from win condition...")
 
 		end_state = (1 << self.center_bit)
@@ -176,7 +150,6 @@ class PegSolitaireSolver:
 			print("❌ Critical Error: Winning state not reachable from start!")
 			return
 
-		# תיקון 2: שימוש ישירות במשתנה המחלקה ושחרור היתר
 		self.winning_states = {canon_end}
 		queue = deque([end_state])
 
@@ -184,7 +157,6 @@ class PegSolitaireSolver:
 		while queue:
 			current_board = queue.popleft()
 			count += 1
-
 			if count % 50000 == 0:
 				print(f"      -> Verified {len(self.winning_states)} winning states... (Queue: {len(queue)})")
 
@@ -193,7 +165,6 @@ class PegSolitaireSolver:
 					prev_board = current_board ^ m['mask']
 					canon_prev = self.get_canonical(prev_board)
 
-					# בדיקה כפולה: גם לא ביקרנו וגם אפשרי
 					if canon_prev not in self.winning_states:
 						if canon_prev in reachable_canonicals:
 							self.winning_states.add(canon_prev)
@@ -203,7 +174,6 @@ class PegSolitaireSolver:
 		print(f"   ✅ Phase 2 Complete. Final Solvable States: {len(self.winning_states)}")
 		print(f"   🚀 Total Training Time: {total_time:.2f}s")
 		self.save_memory()
-
 
 	def get_winning_moves_count(self, board):
 		count = 0
@@ -249,9 +219,6 @@ class PegSolitaireSolver:
 		return states
 
 
-# ==========================================
-#  Part 2: GUI (Unchanged, included for completeness)
-# ==========================================
 class SurvivalFunnelGraph(tk.Canvas):
 	def __init__(self, parent, width=300, height=120, bg="#222"):
 		super().__init__(parent, width=width, height=height, bg=bg, highlightthickness=0)
@@ -302,8 +269,7 @@ class SurvivalFunnelGraph(tk.Canvas):
 		cx, cy = coords[-2], coords[-1]
 		self.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill="white", outline=color, width=2, tag="graph")
 
-		msg = f"Winning Moves: {curr}"
-		if curr == 0: msg = "DEAD END"
+		msg = f"Winning Moves: {curr}" if curr > 0 else "DEAD END"
 		self.create_text(10, 15, text=msg, anchor="w", fill="white", font=("Consolas", 10, "bold"), tag="text")
 
 
@@ -326,29 +292,34 @@ class PegSolitaireGUI:
 		self.animating = False
 		self._init_ui()
 		self.draw_board()
-		initial_moves = self.solver.get_winning_moves_count(self.current_board)
-		self.graph.update_graph(initial_moves)
+		self.graph.update_graph(self.solver.get_winning_moves_count(self.current_board))
 
 	def _init_ui(self):
 		main = tk.Frame(self.root, bg=self.COLOR_BG)
 		main.pack(fill="both", expand=True, padx=20, pady=20)
+
 		left = tk.Frame(main, bg=self.COLOR_BG)
 		left.pack(side="left")
+
 		sz = 7 * self.CELL_SIZE + 2 * self.PADDING
 		self.cvs = tk.Canvas(left, width=sz, height=sz, bg=self.COLOR_BG, highlightthickness=0)
 		self.cvs.pack()
 		self.cvs.bind("<Button-1>", self.on_click)
+
 		btns = tk.Frame(left, bg=self.COLOR_BG)
 		btns.pack(pady=10)
 		tk.Button(btns, text="Undo", command=self.undo, width=8).pack(side=tk.LEFT, padx=5)
 		tk.Button(btns, text="Auto Solve", command=self.auto_solve, bg="#00C853", fg="white").pack(side=tk.LEFT, padx=5)
 		tk.Button(btns, text="Reset", command=self.reset, width=8).pack(side=tk.LEFT, padx=5)
+
 		right = tk.Frame(main, bg=self.COLOR_BG)
 		right.pack(side="right", fill="y", padx=(20, 0))
+
 		tk.Label(right, text="Survival Funnel", font=("Segoe UI", 12, "bold"), fg="#aaa", bg=self.COLOR_BG).pack(
 			anchor="w")
 		self.graph = SurvivalFunnelGraph(right, width=250, height=150)
 		self.graph.pack(pady=(5, 20))
+
 		self.lbl_status = tk.Label(right, text="Game Start", font=("Segoe UI", 16, "bold"), fg="white",
 		                           bg=self.COLOR_BG)
 		self.lbl_status.pack(pady=10)
@@ -363,12 +334,9 @@ class PegSolitaireGUI:
 				x = self.PADDING + c * self.CELL_SIZE + self.CELL_SIZE // 2
 				y = self.PADDING + r * self.CELL_SIZE + self.CELL_SIZE // 2
 				fill = self.COLOR_PEG if has_peg else self.COLOR_HOLE
-				out = ""
-				width = 1
+				out, width = "", 1
 				if has_peg and self.selected == (r, c):
-					fill = self.COLOR_SELECTED;
-					out = "white";
-					width = 2
+					fill, out, width = self.COLOR_SELECTED, "white", 2
 				self.cvs.create_oval(x - 18, y - 18, x + 18, y + 18, fill=fill, outline=out, width=width)
 
 	def on_click(self, e):
@@ -377,6 +345,7 @@ class PegSolitaireGUI:
 		if (r, c) not in self.solver.r_c_to_bit: return
 		idx = self.solver.r_c_to_bit[(r, c)]
 		has_peg = (self.current_board >> idx) & 1
+
 		if self.selected:
 			if self.selected == (r, c):
 				self.selected = None
@@ -396,6 +365,7 @@ class PegSolitaireGUI:
 			if m['src'] == s_idx and m['dst'] == d_idx:
 				if (self.current_board & (m['check_src'] ^ (1 << s_idx))): move = m
 				break
+
 		if move:
 			self.history.append(self.current_board)
 			self.current_board ^= move['mask']
@@ -403,6 +373,7 @@ class PegSolitaireGUI:
 			wins = self.solver.get_winning_moves_count(self.current_board)
 			self.graph.update_graph(wins)
 			self.draw_board()
+
 			if wins > 0:
 				self.lbl_status.config(text="Safe Move ✅", fg="#00E676")
 			elif self.current_board == (1 << self.solver.center_bit):
@@ -424,8 +395,7 @@ class PegSolitaireGUI:
 		self.history = []
 		self.current_board = self.solver.get_initial_board()
 		self.graph.reset()
-		initial_moves = self.solver.get_winning_moves_count(self.current_board)
-		self.graph.update_graph(initial_moves)
+		self.graph.update_graph(self.solver.get_winning_moves_count(self.current_board))
 		self.draw_board()
 		self.lbl_status.config(text="Game Start", fg="white")
 
@@ -447,13 +417,14 @@ class PegSolitaireGUI:
 		wins = self.solver.get_winning_moves_count(states[idx])
 		self.graph.update_graph(wins)
 		self.draw_board()
-		self.root.after(250, lambda: self._animate(states, idx + 1))
+		self.root.after(200, lambda: self._animate(states, idx + 1))
 
 
 def main():
 	root = tk.Tk()
 	root.withdraw()
 	solver = PegSolitaireSolver()
+
 	if not solver.loaded_from_disk:
 		splash = tk.Toplevel(root)
 		splash.geometry("300x150")
