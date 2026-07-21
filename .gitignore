@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+
+# Solver "brain" files generated locally by the desktop GUI apps
+# (solver.py, Solver_Numba.py, Parallel_Solver_Numba.py, ...).
+# Play/solitaire_pro_brain.pkl is intentionally tracked -- it's the
+# precomputed brain the live Flask demo ships with.
+/solitaire_*_brain.pkl

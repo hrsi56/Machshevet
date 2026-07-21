@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekly, so the full training regression gets exercised even without
+    # anyone triggering it manually.
+    - cron: "0 6 * * 1"
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install Tk
+        # setup-python's Linux builds don't bundle the _tkinter C extension;
+        # Parallel_Solver_Numba.py imports tkinter at module load time.
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run fast test suite
+        run: pytest -v
+
+  slow:
+    name: Full training regression (slow)
+    # Not run on every push/PR: a full solver.train() walks the real ~23M
+    # state space and can take minutes on a shared 2-core runner. Runs on the
+    # weekly schedule above, or on demand via the Actions tab.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Tk
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run full solver.train() regression
+        run: pytest -v -m slow

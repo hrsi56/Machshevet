@@ -5,6 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Acceleration](https://img.shields.io/badge/Acceleration-Numba_Parallel-green)
 ![State Space](https://img.shields.io/badge/Winning_States-1,679,072-success)
+[![CI](https://github.com/hrsi56/Machshevet/actions/workflows/ci.yml/badge.svg)](https://github.com/hrsi56/Machshevet/actions/workflows/ci.yml)
 
 Most Peg Solitaire solvers are simple recursive backtracking scripts that find *one* solution. **This is not that.**
 
@@ -24,6 +25,7 @@ This wasn't a straight line to a solution. It was a series of humbling failures.
 Like many engineers, my first instinct was "let's train a model." We implemented **AlphaZero** with MCTS and reward shaping using Pagoda functions.
 * **The Reality:** It was complete overkill. We aren't playing Go; we are playing on a tiny 33-bit grid.
 * **The Dealbreaker:** The reward signal is painfully sparse. You only "win" on the very last move. Despite complex reward shaping, the neural network struggled to converge on a perfect solution for a deterministic puzzle.
+* **The Wreckage:** The abandoned network/MCTS/trainer code lives on in [`WontWork/`](WontWork/) — kept for reference, not maintained, not covered by tests or CI. See [`WontWork/README.md`](WontWork/README.md) for what's actually in there.
 
 ### Phase 2: Reverse BFS & The "Garden of Eden" (Failure)
 We pivoted to a logic-based **Reverse BFS**—starting from the single winning peg and working backward to find all winning configurations.
@@ -117,14 +119,16 @@ This tiny table (~49KB) fits entirely inside the CPU's **L1 Cache**, allowing fo
 You can use the Oracle programmatically to solve specific board states or analyze moves:
 
 ```python
-from solver_engine import PegSolitaireSolver
+from Parallel_Solver_Numba import PegSolitaireSolver
 
-# Initialize the brain
+# Initialize the brain (looks for solitaire_parallel_brain.pkl in the cwd)
 solver = PegSolitaireSolver()
 
-# Load the pre-trained winning states (1.6M entries)
-# If not found, it triggers the Numba parallel training automatically.
-solver.train() 
+# solver.loaded_from_disk tells you whether the 1.6M pre-trained winning
+# states were found on disk. If not, run the Numba parallel BFS yourself --
+# it isn't triggered automatically, and takes ~53s on an 8-core machine.
+if not solver.loaded_from_disk:
+    solver.train()
 
 # Get the solution for a specific board state
 start_board = solver.get_initial_board()
@@ -174,6 +178,18 @@ This is the most advanced metric. It calculates the **weighted average turn** of
 
 ### Prerequisites
 * Python 3.10+
-* Numba (for the parallel engine)
-* NumPy
-* Tkinter (usually included with Python)
+* Tkinter (ships with Python on Windows/macOS; on Debian/Ubuntu install the `python3-tk` OS package separately)
+
+Install everything else with:
+```bash
+pip install -r requirements.txt
+```
+This pulls in Numba (the parallel engine), NumPy, Matplotlib (for `brain_analytics.py`), and Flask (for the `Play/` web demo).
+
+### Running the tests
+```bash
+pip install -r requirements-dev.txt
+pytest                 # fast suite: board geometry, symmetry, persistence (~seconds)
+pytest -m slow          # full solver.train() regression against the documented 1,679,072 states (~a minute+)
+```
+CI (`.github/workflows/ci.yml`) runs the fast suite on every push/PR across Python 3.10–3.12, and the slow suite weekly / on demand. `WontWork/` is excluded — see [`WontWork/README.md`](WontWork/README.md).

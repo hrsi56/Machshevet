@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+# Repo root isn't a package (root-level modules like Parallel_Solver_Numba.py
+# are imported directly), so add it to sys.path for test collection.
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "slow: full solver.train() run over the real ~23M-state search space (seconds to minutes); excluded by default, see tests/test_solver_engine_slow.py",
+]
+addopts = "-m 'not slow'"

@@ -1,0 +1,11 @@
+# Runtime dependencies for the working solver, GUI apps, Flask demo, and analytics.
+# tkinter is not listed here: it ships with the Python interpreter itself
+# (on Debian/Ubuntu install the OS package `python3-tk` if it's missing).
+#
+# Note: WontWork/ is an archived, unmaintained experiment with its own much
+# heavier dependency set (torch, torch_geometric, scipy, ...) — see
+# WontWork/README.md. Those are intentionally NOT included here.
+numpy>=1.24,<3
+numba>=0.59
+matplotlib>=3.7
+flask>=3.0
